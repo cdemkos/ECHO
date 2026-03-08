@@ -1,4 +1,4 @@
-from nicegui import ui, app, notify
+from nicegui import ui, app
 from datetime import datetime
 import uuid
 from pathlib import Path
