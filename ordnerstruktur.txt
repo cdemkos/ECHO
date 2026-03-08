@@ -1,0 +1,12 @@
+echo-second-brain/
+├── main.py               # Startpunkt & NiceGUI App
+├── database.py           # Chroma + SQLite Wrapper
+├── embedder.py           # Embedding-Logik
+├── llm.py                # Ollama / LLM Calls
+├── agents.py             # Mini-Agent Parser & Scheduler (rudimentär)
+├── utils.py              # Hilfsfunktionen
+├── requirements.txt
+├── data/                 # wird automatisch erstellt
+│   ├── notes/            # rohe .md Dateien
+│   └── chroma/           # Chroma DB
+└── README.md

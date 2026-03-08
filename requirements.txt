@@ -1,0 +1,7 @@
+nicegui==2.14.0          # oder neuer
+chromadb==0.5.11         # oder aktuellste
+sentence-transformers==3.3.1
+ollama==0.4.7            # Python-Client für Ollama
+watchdog==6.0.0          # Datei-Änderungen beobachten (optional)
+pydantic==2.10.6
+python-dateutil==2.9.0
