@@ -1,4 +1,4 @@
-# main.py – ECHO Second Brain (komplett – alle Features integriert)
+# main.py – ECHO Second Brain (komplett – alle Features integriert, ohne Namensabfrage)
 # Stand: März 2026
 
 from nicegui import ui, app
@@ -31,8 +31,6 @@ reflection_content = None
 linking_dialog = None
 linking_content = None
 merge_button = None
-edit_dialog = None
-delete_dialog = None
 
 
 @ui.page('/')
@@ -113,7 +111,7 @@ async def index():
         ui.button('Manuell speichern', on_click=lambda: save_thought(auto=False)) \
             .props('unelevated color=green-600 rounded-xl').classes('mt-6 w-full md:w-1/3 mx-auto text-lg hover:scale-105 transition-transform')
 
-    # Suche-Bereich
+    # Suche-Bereich mit Edit & Delete
     with ui.card().classes('w-full max-w-4xl mx-auto mt-10 shadow-2xl rounded-3xl bg-gradient-to-br from-slate-950 to-slate-900 border border-slate-700/50'):
         ui.label('Suche in deinem ECHO').classes('text-3xl font-bold mb-5 text-white text-center')
         search_input = ui.input(
@@ -290,7 +288,7 @@ async def generate_auto_daily_summary():
 
         context = "\n\n".join([f"[{ts}] {text[:400]}..." for ts, text in entries])
         prompt = (
-            f"Erstelle eine kurze Tageszusammenfassung für den Nutzer basierend auf den Gedanken der letzten 24 Stunden:\n\n"
+            "Erstelle eine kurze Tageszusammenfassung für den Nutzer basierend auf den Gedanken der letzten 24 Stunden:\n\n"
             f"{context}\n\n"
             "- Welche Hauptthemen standen im Vordergrund?\n"
             "- Wie war die emotionale Tonalität (Frust, Energie, Ruhe, Druck, …)?\n"
@@ -489,6 +487,79 @@ async def export_all():
 
     except Exception as e:
         ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
+
+
+# =====================================================================
+# Hilfsfunktionen für Edit & Delete (aus vorheriger Iteration)
+# =====================================================================
+
+async def edit_note(hit):
+    with ui.dialog(value=True).props('persistent') as edit_dialog:
+        with ui.card().classes('w-full max-w-4xl'):
+            ui.label(f'Bearbeite Eintrag vom {hit["timestamp"]}').classes('text-2xl font-bold mb-4')
+            edit_input = ui.textarea(value=hit['text']).props('autogrow outlined').classes('w-full min-h-64')
+            ui.button('Speichern', on_click=lambda: save_edit(hit, edit_input.value, edit_dialog)) \
+                .props('unelevated color=green-8').classes('mt-6')
+            ui.button('Abbrechen', on_click=edit_dialog.hide).props('unelevated color=grey-8').classes('mt-2')
+
+
+async def save_edit(hit, new_text, dialog):
+    try:
+        # Alte Notiz archivieren
+        old_path = Path(hit['file_path'])
+        if old_path.exists():
+            shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
+
+        # Neue Version speichern
+        timestamp = datetime.now().isoformat()
+        note_id = str(uuid.uuid4())[:12]
+        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_EDIT.md"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(f"# Bearbeitete Version – {timestamp} (Original: {hit['timestamp']})\n\n{new_text}")
+
+        embedding = get_embedding(new_text)
+        db.add_note(note_id, timestamp, new_text, str(filename), embedding)
+
+        # Alte aus DB und Chroma löschen
+        db.collection.delete(ids=[hit['id']])
+        db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
+        db.conn.commit()
+
+        ui.notify('Eintrag erfolgreich bearbeitet & alte Version archiviert', type='positive')
+        dialog.hide()
+
+    except Exception as e:
+        ui.notify(f'Bearbeitung fehlgeschlagen: {str(e)}', type='negative')
+
+
+async def delete_note(hit):
+    with ui.dialog(value=True).props('persistent') as delete_dialog:
+        with ui.card().classes('w-full max-w-md'):
+            ui.label('Eintrag wirklich löschen?').classes('text-2xl font-bold mb-4 text-red-400')
+            ui.label('Diese Aktion kann nicht rückgängig gemacht werden.').classes('mb-6')
+            with ui.row().classes('justify-end gap-4'):
+                ui.button('Abbrechen', on_click=delete_dialog.hide).props('unelevated color=grey-8')
+                ui.button('Löschen', on_click=lambda: confirm_delete(hit, delete_dialog)).props('unelevated color=red-8')
+
+
+async def confirm_delete(hit, dialog):
+    try:
+        # Datei löschen
+        old_path = Path(hit['file_path'])
+        if old_path.exists():
+            os.remove(old_path)
+
+        # Aus DB und Chroma löschen
+        db.collection.delete(ids=[hit['id']])
+        db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
+        db.conn.commit()
+
+        ui.notify('Eintrag erfolgreich gelöscht', type='negative')
+        dialog.hide()
+
+    except Exception as e:
+        ui.notify(f'Löschen fehlgeschlagen: {str(e)}', type='negative')
 
 
 ui.run(
