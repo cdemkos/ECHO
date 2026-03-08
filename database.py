@@ -1,4 +1,5 @@
 # database.py – mit lazy-loading (verhindert Timeout beim Start)
+import os
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 import chromadb
 from pathlib import Path
