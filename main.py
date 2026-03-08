@@ -1,9 +1,11 @@
+# main.py – Echo Kern – korrigiert & verfeinert (kompatibel mit NiceGUI 1.4+ / 2.x)
+
 from nicegui import ui, app
 from datetime import datetime
 import uuid
 from pathlib import Path
-import asyncio
 
+# Lokale Module
 from database import NoteDB
 from llm import generate_summary
 from embedder import get_embedding
@@ -14,21 +16,25 @@ NOTES_DIR.mkdir(parents=True, exist_ok=True)
 
 db = NoteDB()
 
+
 @ui.page('/')
 async def index():
     ui.label('Echo – dein lokaler Stream-of-Thought').classes('text-2xl font-bold mb-6 text-center')
 
+    # =====================================
+    # Eingabe-Bereich
+    # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto shadow-lg'):
         ui.label('Neuer Gedanke (Stream-of-Thought)').classes('text-xl mb-2')
         thought_input = ui.textarea(
-            placeholder='Schreib einfach drauflos... (Enter oder Auto-Save nach 8 Sekunden)'
+            placeholder='Schreib einfach drauflos... (Enter oder Auto-Save nach 8 Sekunden Inaktivität)'
         ).props('autogrow outlined clearable').classes('w-full min-h-48')
 
-        last_change = None
+        # Timer für Auto-Save (wird bei jeder Änderung zurückgesetzt)
         auto_save_timer = None
 
         async def save_thought(auto: bool = False):
-            nonlocal last_change, auto_save_timer
+            nonlocal auto_save_timer
             text = thought_input.value.strip()
             if not text:
                 if not auto:
@@ -56,23 +62,30 @@ async def index():
             except Exception as e:
                 ui.notify(f'Speichern fehlgeschlagen: {str(e)}', type='negative')
 
-        # Enter = manuelles Speichern
+        # Enter → manuelles Speichern
         thought_input.on('keydown.enter', lambda: save_thought(auto=False))
 
-        # Timer-basierter Auto-Save
+        # Auto-Save-Logik: Timer wird bei jeder Eingabe zurückgesetzt
         def reset_auto_save_timer():
             nonlocal auto_save_timer
             if auto_save_timer:
                 auto_save_timer.cancel()
-            auto_save_timer = ui.timer(8.0, lambda: save_thought(auto=True), once=True)
+            auto_save_timer = ui.timer(
+                8.0,
+                lambda: save_thought(auto=True),
+                once=True
+            )
 
+        # Bei jeder Eingabe oder Fokus → Timer zurücksetzen
         thought_input.on('input', reset_auto_save_timer)
         thought_input.on('focus', reset_auto_save_timer)
 
         ui.button('Manuell speichern', on_click=lambda: save_thought(auto=False)) \
             .props('unelevated color=green-9').classes('mt-4')
 
-    # Suche-Bereich (unverändert, aber mit ui.notify-Fehlerbehandlung)
+    # =====================================
+    # Suche-Bereich
+    # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto mt-8 shadow-lg'):
         ui.label('Suche in deinem Echo').classes('text-xl mb-2')
         search_input = ui.input(
@@ -118,4 +131,14 @@ async def index():
         ui.button('Suchen', on_click=perform_search) \
             .props('unelevated color=blue-9').classes('mt-4')
 
-ui.run(title='Echo – Second Brain', port=9876, dark=True, reload=True, show=True)
+
+# =====================================
+# Start
+# =====================================
+ui.run(
+    title='Echo – Second Brain',
+    port=9876,
+    dark=True,
+    reload=True,
+    show=True
+)
