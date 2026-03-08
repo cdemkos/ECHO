@@ -1,4 +1,4 @@
-# database.py – lazy embedding model
+# database.py – mit lazy model
 
 import chromadb
 from pathlib import Path
@@ -10,8 +10,8 @@ class NoteDB:
         self.client = chromadb.PersistentClient(path=str(Path("data") / "chroma"))
         self.collection = self.client.get_or_create_collection(name="echo_notes")
         
-        self._model = None  # lazy load
-        
+        self._model = None  # ← noch nicht geladen
+
         db_path = Path("data/echo.db")
         db_path.parent.mkdir(exist_ok=True)
         self.conn = sqlite3.connect(db_path)
