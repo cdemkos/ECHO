@@ -1,4 +1,5 @@
-# main.py – ECHO Kern + Reflexion + Export + Auto-Linking (komplett)
+# main.py – ECHO Second Brain (komplett – alle Features integriert)
+# Stand: März 2026
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -30,6 +31,8 @@ reflection_content = None
 linking_dialog = None
 linking_content = None
 merge_button = None
+edit_dialog = None
+delete_dialog = None
 
 
 @ui.page('/')
@@ -41,7 +44,14 @@ async def index():
         ui.label('ECHO').classes('text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl')
         ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-2xl text-slate-300 mt-3 font-light italic')
 
+    # Automatische Funktionen beim Start
+    await check_and_generate_auto_reflection()
+    await generate_auto_daily_summary()
+    await decay_and_archive()
+
+    # =====================================
     # Eingabe-Bereich
+    # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto shadow-2xl rounded-3xl bg-gradient-to-br from-slate-950 to-slate-900 border border-slate-700/50'):
         ui.label('Neuer Gedanke').classes('text-3xl font-bold mb-5 text-white text-center')
         thought_input = ui.textarea(
@@ -69,8 +79,15 @@ async def index():
                 embedding = get_embedding(text)
                 db.add_note(note_id, timestamp, text, str(filename), embedding)
 
+                # Tags generieren und speichern
+                tags = await generate_tags(text)
+                db.collection.update(
+                    ids=[note_id],
+                    metadatas=[{"timestamp": timestamp, "file_path": str(filename), "tags": ",".join(tags)}]
+                )
+
                 ui.notify(
-                    f'Gedanke gespeichert → {note_id[:8]}' + (' (Auto-Save)' if auto else ''),
+                    f'Gedanke gespeichert → {note_id[:8]} (Tags: {", ".join(tags)})' + (' (Auto-Save)' if auto else ''),
                     type='positive',
                     close_button=True
                 )
@@ -130,11 +147,19 @@ async def index():
                 )
                 summary = await generate_summary(summary_prompt)
 
-                result_area.content = (
-                    f"**Zusammenfassung:**\n\n{summary}\n\n"
-                    f"---\n\n**Gefundene Einträge:**\n\n"
-                    + "\n\n".join(context_parts)
-                )
+                html = f"**Zusammenfassung:**\n\n{summary}\n\n---\n\n**Gefundene Einträge:**\n\n"
+
+                with ui.column() as result_column:
+                    for hit in hits:
+                        card = ui.card().classes('w-full mb-4')
+                        with card:
+                            ui.markdown(f"**{hit['timestamp']}**  \n{hit['text'][:450]}...")
+                            with ui.row().classes('gap-4 mt-4'):
+                                ui.button('Bearbeiten', on_click=lambda h=hit: edit_note(h)).props('unelevated color=blue-8')
+                                ui.button('Löschen', on_click=lambda h=hit: delete_note(h)).props('unelevated color=red-8')
+
+                result_area.content = html
+
             except Exception as e:
                 result_area.content = f'Fehler bei der Suche: {str(e)}'
                 ui.notify(f'Suchfehler: {str(e)}', type='negative')
@@ -178,6 +203,156 @@ async def index():
                     .props('unelevated color=grey-8 rounded-xl').classes('text-lg')
                 merge_button = ui.button('Alle mergen', on_click=lambda: setattr(linking_dialog, 'value', False)) \
                     .props('unelevated color=teal-9 rounded-xl').classes('text-lg text-white')
+
+
+# =====================================================================
+# Hilfsfunktionen
+# =====================================================================
+
+async def generate_tags(text: str):
+    try:
+        prompt = (
+            f"Analysiere den folgenden Text und schlage 2–4 passende Tags / Kategorien vor. "
+            f"Gib nur die Tags als kommagetrennte Liste zurück, ohne Einleitung oder Erklärung.\n\n"
+            f"Text: {text[:1000]}\n\n"
+            f"Beispiele: Produktivität,Reise,Emotionen,Todo,Beziehung,Finanzen,Gesundheit"
+        )
+        tags_str = await generate_summary(prompt)
+        tags = [t.strip() for t in tags_str.split(',') if t.strip()]
+        return tags[:4]
+    except Exception:
+        return []
+
+
+async def check_and_generate_auto_reflection():
+    try:
+        since = (datetime.now() - timedelta(days=7)).isoformat()
+        db.cursor.execute(
+            "SELECT id FROM notes WHERE timestamp >= ? AND text LIKE '%Wöchentliche Reflexion%' LIMIT 1",
+            (since,)
+        )
+        if db.cursor.fetchone():
+            return
+
+        context_entries = db.cursor.execute(
+            "SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp",
+            (since,)
+        ).fetchall()
+
+        if not context_entries:
+            return
+
+        context = "\n\n".join([f"[{ts}] {text[:600]}..." for ts, text in context_entries])
+        prompt = (
+            "Du bist ein ehrlicher, reflektierender Coach. "
+            "Analysiere die folgenden Gedanken des Nutzers der letzten Woche:\n\n"
+            f"{context}\n\n"
+            "- Welche Themen tauchen wiederholt auf?\n"
+            "- Welche emotionale Tonalität dominiert (Frust, Neugier, Stolz, Angst, …)?\n"
+            "- Welche Muster, Gewohnheiten oder offene Loops siehst du?\n"
+            "- Was wurde verschoben, ignoriert oder bereut?\n"
+            "- Was könnte der Nutzer nächste Woche anders / besser machen?\n\n"
+            "Strukturiere die Antwort klar mit Überschriften und Aufzählungspunkten. "
+            "Sei direkt, aber wohlwollend – keine Schönfärberei."
+        )
+
+        reflection_text = await generate_summary(prompt)
+
+        timestamp = datetime.now().isoformat()
+        note_id = str(uuid.uuid4())[:12]
+        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_REFLEXION.md"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(f"# Wöchentliche Reflexion – {timestamp}\n\n{reflection_text}")
+
+        embedding = get_embedding(reflection_text)
+        db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
+
+        ui.notify('Automatische wöchentliche Reflexion wurde erstellt und gespeichert.', type='positive', timeout=8)
+
+    except Exception as e:
+        print(f"Auto-Reflexion fehlgeschlagen: {e}")
+
+
+async def generate_auto_daily_summary():
+    try:
+        since = (datetime.now() - timedelta(hours=24)).isoformat()
+        db.cursor.execute("SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp", (since,))
+        entries = db.cursor.fetchall()
+
+        if not entries:
+            return
+
+        today = datetime.now().strftime('%Y-%m-%d')
+        db.cursor.execute("SELECT id FROM notes WHERE timestamp LIKE ? AND text LIKE '%Tageszusammenfassung%'", (f"{today}%",))
+        if db.cursor.fetchone():
+            return
+
+        context = "\n\n".join([f"[{ts}] {text[:400]}..." for ts, text in entries])
+        prompt = (
+            f"Erstelle eine kurze Tageszusammenfassung für den Nutzer basierend auf den Gedanken der letzten 24 Stunden:\n\n"
+            f"{context}\n\n"
+            "- Welche Hauptthemen standen im Vordergrund?\n"
+            "- Wie war die emotionale Tonalität (Frust, Energie, Ruhe, Druck, …)?\n"
+            "- Welche offenen Punkte oder nächsten Schritte kristallisieren sich heraus?\n"
+            "- Ein kurzer, motivierender oder warnender Satz für den Rest des Tages.\n\n"
+            "Halte es knapp (max. 150–200 Wörter), strukturiert und direkt. "
+            f"Titel: Tageszusammenfassung – {today}"
+        )
+
+        summary_text = await generate_summary(prompt)
+
+        timestamp = datetime.now().isoformat()
+        note_id = str(uuid.uuid4())[:12]
+        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_DAILY_SUMMARY.md"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(f"# Tageszusammenfassung – {today}\n\n{summary_text}")
+
+        embedding = get_embedding(summary_text)
+        db.add_note(note_id, timestamp, summary_text, str(filename), embedding)
+
+        ui.notify('Deine Tageszusammenfassung wurde automatisch erstellt und gespeichert.', type='positive', timeout=8)
+
+    except Exception as e:
+        print(f"Auto-Zusammenfassung fehlgeschlagen: {e}")
+
+
+async def decay_and_archive():
+    try:
+        archive_after_days = 90
+        reference_window_days = 30
+
+        cutoff = (datetime.now() - timedelta(days=archive_after_days)).isoformat()
+        reference_cutoff = (datetime.now() - timedelta(days=reference_window_days)).isoformat()
+
+        db.cursor.execute("""
+            SELECT id, timestamp, file_path 
+            FROM notes 
+            WHERE timestamp < ? 
+            AND (SELECT COUNT(*) FROM notes 
+                 WHERE text LIKE '%' || notes.id || '%' 
+                 AND timestamp > ?) = 0
+        """, (cutoff, reference_cutoff))
+
+        old_notes = db.cursor.fetchall()
+
+        archived = 0
+        for note_id, ts, file_path in old_notes:
+            old_path = Path(file_path)
+            if old_path.exists():
+                shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
+            db.collection.delete(ids=[note_id])
+            db.cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            archived += 1
+
+        db.conn.commit()
+
+        if archived > 0:
+            ui.notify(f'{archived} alte Notizen wurden archiviert.', type='info', timeout=6)
+
+    except Exception as e:
+        print(f"Decay fehlgeschlagen: {e}")
 
 
 async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
