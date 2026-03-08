@@ -1,8 +1,5 @@
-# main.py – ECHO Second Brain (komplett – alle Features integriert)
+# main.py – ECHO Second Brain mit Lade-Screen beim Start
 # Stand: März 2026
-# Features: Auto-Save, Suche + LLM-Zusammenfassung, manuelle & auto Reflexion,
-#           Tageszusammenfassung auto, Auto-Linking + Merge, Edit/Delete,
-#           Tags per LLM, Decay & Archivierung
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -12,7 +9,6 @@ import zipfile
 import io
 import os
 import shutil
-import json
 
 # Lokale Module
 from database import NoteDB
@@ -27,8 +23,6 @@ ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 NOTES_DIR.mkdir(parents=True, exist_ok=True)
 
-db = NoteDB()
-
 # Globale Referenzen für Dialoge
 reflection_dialog = None
 reflection_content = None
@@ -37,8 +31,41 @@ linking_content = None
 merge_button = None
 
 
+# =====================================
+# Lade-Screen (wird als erste Seite angezeigt)
+# =====================================
 @ui.page('/')
-async def index():
+async def loading_screen():
+    ui.context.client.content.classes('bg-slate-950')
+
+    with ui.column().classes('items-center justify-center min-h-screen text-white'):
+        ui.label('ECHO').classes('text-8xl font-black text-indigo-400 tracking-widest drop-shadow-2xl animate-pulse')
+        ui.label('Dein lokaler Second Brain lädt...').classes('text-2xl mt-6 mb-4')
+        ui.spinner(size='xl', color='indigo').classes('mt-6')
+
+        status = ui.label('Datenbank und Modelle werden initialisiert...').classes('text-lg mt-10 opacity-80')
+
+    # Initialisierung asynchron starten
+    async def initialize():
+        try:
+            status.text = 'Lade Embedding-Modell (einmalig, bitte warten)...'
+            db = NoteDB()  # ← hier wird das Modell lazy geladen
+            status.text = 'Initialisierung abgeschlossen – lade Oberfläche...'
+            # Zur echten Hauptseite weiterleiten
+            await ui.run_javascript('window.location.href = "/app"')
+        except Exception as e:
+            status.text = f'Fehler beim Laden: {str(e)}'
+            status.classes('text-red-400')
+
+    # 0.1 s verzögern, damit der Lade-Screen sichtbar ist
+    ui.timer(0.1, initialize, once=True)
+
+
+# =====================================
+# Echte Hauptseite (wird nach Lade-Screen aufgerufen)
+# =====================================
+@ui.page('/app')
+async def main_app():
     global reflection_dialog, reflection_content, linking_dialog, linking_content, merge_button
 
     # Header
@@ -208,7 +235,7 @@ async def index():
 
 
 # =====================================================================
-# Hilfsfunktionen
+# Hilfsfunktionen (Auszug – den Rest aus vorheriger Version übernehmen)
 # =====================================================================
 
 async def generate_tags(text: str):
@@ -226,345 +253,9 @@ async def generate_tags(text: str):
         return []
 
 
-async def check_and_generate_auto_reflection():
-    try:
-        since = (datetime.now() - timedelta(days=7)).isoformat()
-        db.cursor.execute(
-            "SELECT id FROM notes WHERE timestamp >= ? AND text LIKE '%Wöchentliche Reflexion%' LIMIT 1",
-            (since,)
-        )
-        if db.cursor.fetchone():
-            return
-
-        context_entries = db.cursor.execute(
-            "SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp",
-            (since,)
-        ).fetchall()
-
-        if not context_entries:
-            return
-
-        context = "\n\n".join([f"[{ts}] {text[:600]}..." for ts, text in context_entries])
-        prompt = (
-            "Du bist ein ehrlicher, reflektierender Coach. "
-            "Analysiere die folgenden Gedanken des Nutzers der letzten Woche:\n\n"
-            f"{context}\n\n"
-            "- Welche Themen tauchen wiederholt auf?\n"
-            "- Welche emotionale Tonalität dominiert (Frust, Neugier, Stolz, Angst, …)?\n"
-            "- Welche Muster, Gewohnheiten oder offene Loops siehst du?\n"
-            "- Was wurde verschoben, ignoriert oder bereut?\n"
-            "- Was könnte der Nutzer nächste Woche anders / besser machen?\n\n"
-            "Strukturiere die Antwort klar mit Überschriften und Aufzählungspunkten. "
-            "Sei direkt, aber wohlwollend – keine Schönfärberei."
-        )
-
-        reflection_text = await generate_summary(prompt)
-
-        timestamp = datetime.now().isoformat()
-        note_id = str(uuid.uuid4())[:12]
-        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_REFLEXION.md"
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# Wöchentliche Reflexion – {timestamp}\n\n{reflection_text}")
-
-        embedding = get_embedding(reflection_text)
-        db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
-
-        ui.notify('Automatische wöchentliche Reflexion wurde erstellt und gespeichert.', type='positive', timeout=8)
-
-    except Exception as e:
-        print(f"Auto-Reflexion fehlgeschlagen: {e}")
-
-
-async def generate_auto_daily_summary():
-    try:
-        since = (datetime.now() - timedelta(hours=24)).isoformat()
-        db.cursor.execute("SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp", (since,))
-        entries = db.cursor.fetchall()
-
-        if not entries:
-            return
-
-        today = datetime.now().strftime('%Y-%m-%d')
-        db.cursor.execute("SELECT id FROM notes WHERE timestamp LIKE ? AND text LIKE '%Tageszusammenfassung%'", (f"{today}%",))
-        if db.cursor.fetchone():
-            return
-
-        context = "\n\n".join([f"[{ts}] {text[:400]}..." for ts, text in entries])
-        prompt = (
-            "Erstelle eine kurze Tageszusammenfassung für den Nutzer basierend auf den Gedanken der letzten 24 Stunden:\n\n"
-            f"{context}\n\n"
-            "- Welche Hauptthemen standen im Vordergrund?\n"
-            "- Wie war die emotionale Tonalität (Frust, Energie, Ruhe, Druck, …)?\n"
-            "- Welche offenen Punkte oder nächsten Schritte kristallisieren sich heraus?\n"
-            "- Ein kurzer, motivierender oder warnender Satz für den Rest des Tages.\n\n"
-            "Halte es knapp (max. 150–200 Wörter), strukturiert und direkt. "
-            f"Titel: Tageszusammenfassung – {today}"
-        )
-
-        summary_text = await generate_summary(prompt)
-
-        timestamp = datetime.now().isoformat()
-        note_id = str(uuid.uuid4())[:12]
-        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_DAILY_SUMMARY.md"
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# Tageszusammenfassung – {today}\n\n{summary_text}")
-
-        embedding = get_embedding(summary_text)
-        db.add_note(note_id, timestamp, summary_text, str(filename), embedding)
-
-        ui.notify('Deine Tageszusammenfassung wurde automatisch erstellt und gespeichert.', type='positive', timeout=8)
-
-    except Exception as e:
-        print(f"Auto-Zusammenfassung fehlgeschlagen: {e}")
-
-
-async def decay_and_archive():
-    try:
-        archive_after_days = 90
-        reference_window_days = 30
-
-        cutoff = (datetime.now() - timedelta(days=archive_after_days)).isoformat()
-        reference_cutoff = (datetime.now() - timedelta(days=reference_window_days)).isoformat()
-
-        db.cursor.execute("""
-            SELECT id, timestamp, file_path 
-            FROM notes 
-            WHERE timestamp < ? 
-            AND (SELECT COUNT(*) FROM notes 
-                 WHERE text LIKE '%' || notes.id || '%' 
-                 AND timestamp > ?) = 0
-        """, (cutoff, reference_cutoff))
-
-        old_notes = db.cursor.fetchall()
-
-        archived = 0
-        for note_id, ts, file_path in old_notes:
-            old_path = Path(file_path)
-            if old_path.exists():
-                shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
-            db.collection.delete(ids=[note_id])
-            db.cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
-            archived += 1
-
-        db.conn.commit()
-
-        if archived > 0:
-            ui.notify(f'{archived} alte Notizen wurden archiviert.', type='info', timeout=6)
-
-    except Exception as e:
-        print(f"Decay fehlgeschlagen: {e}")
-
-
-async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
-    try:
-        query_results = db.collection.query(
-            query_embeddings=[new_embedding],
-            n_results=5,
-            include=['metadatas', 'documents', 'distances']
-        )
-
-        similar = []
-        for i in range(len(query_results['ids'][0])):
-            sim = 1 - query_results['distances'][0][i]
-            if sim > 0.75 and query_results['ids'][0][i] != new_note_id:
-                id_ = query_results['ids'][0][i]
-                db.cursor.execute("SELECT timestamp, text, file_path FROM notes WHERE id = ?", (id_,))
-                row = db.cursor.fetchone()
-                if row:
-                    similar.append({
-                        'id': id_,
-                        'timestamp': row[0],
-                        'text': row[1][:300] + '...',
-                        'similarity': sim,
-                        'file_path': row[2]
-                    })
-
-        if not similar:
-            return
-
-        content = "**Sehr ähnliche Gedanken gefunden (Ähnlichkeit > 75 %):**\n\n"
-        for entry in similar:
-            content += f"- **{entry['timestamp']}** ({entry['similarity']:.2%})\n  {entry['text']}\n\n"
-
-        content += "Möchtest du diese Einträge mergen? (Alte werden archiviert)"
-
-        linking_content.content = content
-        linking_dialog.value = True
-
-        async def do_merge():
-            merged_text = new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
-            for entry in similar:
-                merged_text += f"[{entry['timestamp']}] {entry['text']}\n\n---\n\n"
-                old_path = Path(entry['file_path'])
-                if old_path.exists():
-                    shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
-                db.collection.delete(ids=[entry['id']])
-                db.cursor.execute("DELETE FROM notes WHERE id = ?", (entry['id'],))
-                db.conn.commit()
-
-            timestamp = datetime.now().isoformat()
-            note_id = str(uuid.uuid4())[:12]
-            filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_MERGED.md"
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(f"# Gemergter Gedanke – {timestamp}\n\n{merged_text}")
-
-            embedding = get_embedding(merged_text)
-            db.add_note(note_id, timestamp, merged_text, str(filename), embedding)
-
-            ui.notify('Einträge erfolgreich gemergt & archiviert', type='positive')
-            linking_dialog.value = False
-
-        merge_button.on('click', do_merge)
-
-    except Exception as e:
-        ui.notify(f'Auto-Linking fehlgeschlagen: {str(e)}', type='negative')
-
-
-async def generate_weekly_reflection():
-    try:
-        since = (datetime.now() - timedelta(days=7)).isoformat()
-        db.cursor.execute("SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp", (since,))
-        entries = db.cursor.fetchall()
-
-        if not entries:
-            ui.notify('Keine Notizen in den letzten 7 Tagen gefunden.', type='warning')
-            return
-
-        context = "\n\n".join([f"[{ts}] {text[:600]}..." for ts, text in entries])
-        prompt = (
-            "Du bist ein ehrlicher, reflektierender Coach. "
-            "Analysiere die folgenden Gedanken des Nutzers der letzten Woche:\n\n"
-            f"{context}\n\n"
-            "- Welche Themen tauchen wiederholt auf?\n"
-            "- Welche emotionale Tonalität dominiert (Frust, Neugier, Stolz, Angst, …)?\n"
-            "- Welche Muster, Gewohnheiten oder offene Loops siehst du?\n"
-            "- Was wurde verschoben, ignoriert oder bereut?\n"
-            "- Was könnte der Nutzer nächste Woche anders / besser machen?\n\n"
-            "Strukturiere die Antwort klar mit Überschriften und Aufzählungspunkten. "
-            "Sei direkt, aber wohlwollend – keine Schönfärberei."
-        )
-
-        reflection_text = await generate_summary(prompt)
-
-        timestamp = datetime.now().isoformat()
-        note_id = str(uuid.uuid4())[:12]
-        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_REFLEXION.md"
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# Wöchentliche Reflexion – {timestamp}\n\n{reflection_text}")
-
-        embedding = get_embedding(reflection_text)
-        db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
-
-        reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
-        reflection_dialog.value = True
-
-        ui.notify('Reflexion generiert & gespeichert', type='positive')
-
-    except Exception as e:
-        ui.notify(f'Reflexion fehlgeschlagen: {str(e)}', type='negative')
-
-
-async def export_all():
-    try:
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            for md_file in NOTES_DIR.glob('*.md'):
-                zip_file.write(md_file, arcname=f"notes/{md_file.name}")
-
-            if Path('data/echo.db').exists():
-                zip_file.write('data/echo.db', arcname='data/echo.db')
-
-            if CHROMA_DIR.exists():
-                for root, _, files in os.walk(CHROMA_DIR):
-                    for file in files:
-                        file_path = Path(root) / file
-                        arc_path = file_path.relative_to(DATA_DIR)
-                        zip_file.write(file_path, arcname=str(arc_path))
-
-        zip_buffer.seek(0)
-        filename = f"echo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-        ui.download(zip_buffer.read(), filename=filename)
-        ui.notify('Export abgeschlossen – ZIP wird heruntergeladen', type='positive')
-
-    except Exception as e:
-        ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
-
-
-# =====================================================================
-# Hilfsfunktionen für Edit & Delete
-# =====================================================================
-
-async def edit_note(hit):
-    with ui.dialog(value=True).props('persistent') as edit_dialog:
-        with ui.card().classes('w-full max-w-4xl'):
-            ui.label(f'Bearbeite Eintrag vom {hit["timestamp"]}').classes('text-2xl font-bold mb-4')
-            edit_input = ui.textarea(value=hit['text']).props('autogrow outlined').classes('w-full min-h-64')
-            ui.button('Speichern', on_click=lambda: save_edit(hit, edit_input.value, edit_dialog)) \
-                .props('unelevated color=green-8').classes('mt-6')
-            ui.button('Abbrechen', on_click=edit_dialog.hide).props('unelevated color=grey-8').classes('mt-2')
-
-
-async def save_edit(hit, new_text, dialog):
-    try:
-        # Alte Notiz archivieren
-        old_path = Path(hit['file_path'])
-        if old_path.exists():
-            shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
-
-        # Neue Version speichern
-        timestamp = datetime.now().isoformat()
-        note_id = str(uuid.uuid4())[:12]
-        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_EDIT.md"
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# Bearbeitete Version – {timestamp} (Original: {hit['timestamp']})\n\n{new_text}")
-
-        embedding = get_embedding(new_text)
-        db.add_note(note_id, timestamp, new_text, str(filename), embedding)
-
-        # Alte aus DB und Chroma löschen
-        db.collection.delete(ids=[hit['id']])
-        db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
-        db.conn.commit()
-
-        ui.notify('Eintrag erfolgreich bearbeitet & alte Version archiviert', type='positive')
-        dialog.hide()
-
-    except Exception as e:
-        ui.notify(f'Bearbeitung fehlgeschlagen: {str(e)}', type='negative')
-
-
-async def delete_note(hit):
-    with ui.dialog(value=True).props('persistent') as delete_dialog:
-        with ui.card().classes('w-full max-w-md'):
-            ui.label('Eintrag wirklich löschen?').classes('text-2xl font-bold mb-4 text-red-400')
-            ui.label('Diese Aktion kann nicht rückgängig gemacht werden.').classes('mb-6')
-            with ui.row().classes('justify-end gap-4'):
-                ui.button('Abbrechen', on_click=delete_dialog.hide).props('unelevated color=grey-8')
-                ui.button('Löschen', on_click=lambda: confirm_delete(hit, delete_dialog)).props('unelevated color=red-8')
-
-
-async def confirm_delete(hit, dialog):
-    try:
-        # Datei löschen
-        old_path = Path(hit['file_path'])
-        if old_path.exists():
-            os.remove(old_path)
-
-        # Aus DB und Chroma löschen
-        db.collection.delete(ids=[hit['id']])
-        db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
-        db.conn.commit()
-
-        ui.notify('Eintrag erfolgreich gelöscht', type='negative')
-        dialog.hide()
-
-    except Exception as e:
-        ui.notify(f'Löschen fehlgeschlagen: {str(e)}', type='negative')
-
+# ... (hier kommen alle anderen Funktionen wie check_auto_linking, generate_weekly_reflection,
+#      export_all, edit_note, save_edit, delete_note, confirm_delete, decay_and_archive usw.
+#      – kopiere sie aus deiner vorherigen Version einfach rein)
 
 ui.run(
     title='ECHO – dein lokaler Second Brain',
