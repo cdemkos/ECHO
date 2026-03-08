@@ -1,111 +1,147 @@
-# Echo – dein lokaler, schneller Stream-of-Thought Second Brain
+<div align="center">
 
-Ein radikal minimalistisches, komplett lokales Notiz- & Denk-Tool, das sich wie ein stiller Gesprächspartner anfühlt – schnell, privat, ohne Ballast.
+# ECHO  
+**Dein lokaler, datenschutzfreundlicher Stream-of-Thought Second Brain**
 
-### Philosophie in einem Satz
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![NiceGUI](https://img.shields.io/badge/UI-NiceGUI-00d084?style=for-the-badge&logo=react&logoColor=white)](https://nicegui.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![Repo Size](https://img.shields.io/github/repo-size/cdemkos/ECHO?style=for-the-badge&color=orange)](https://github.com/cdemkos/ECHO)
 
-Du tippst oder sprichst einfach drauflos → alles wird automatisch gespeichert, indiziert und semantisch durchsuchbar → das Tool denkt mit, fasst zusammen, findet Verbindungen und erinnert dich an deine eigenen Muster – ohne dass du jemals Tags, Ordner oder komplizierte Strukturen pflegen musst.
+</div>
 
-### Was Echo anders macht
+<br>
 
-- Nur ein Eingabefeld – kein "Neue Notiz"-Button, keine Sidebar, keine Datenbank-Ansichten  
-- Sub-Second-Suche auch bei 20.000+ Einträgen (Hybrid BM25 + Embedding)  
-- Aggressive Auto-Zusammenfassung alter Gedankenstränge  
-- Mini-Agenten in natürlicher Sprache definierbar (zukünftig)  
-- Keine Cloud, kein Telemetrie, keine API-Keys  
-- Decay & Merge-Vorschläge (zukünftig)  
-- Wöchentliche Reflexion (zukünftig)
+**ECHO** ist ein komplett lokales, offline-fähiges Second-Brain-Tool, das deinen Gedankengängen folgt – schnell, privat und ohne Cloud-Zwang.
 
-### Aktueller Stand (MVP – v0.1)
+- Sofortiges Stream-of-Thought-Eingabefeld mit Auto-Save  
+- Semantische Suche + LLM-Zusammenfassung (Ollama lokal)  
+- Automatische wöchentliche Reflexion & Tageszusammenfassung  
+- Auto-Linking ähnlicher Gedanken + Merge-Funktion  
+- Edit / Delete / Tags / Decay & Archivierung  
+- Export als ZIP (Notizen + DB + Embeddings)  
+- Tray-Icon + globaler Hotkey (zukünftig)
 
-Funktioniert bereits:
+<br>
 
-- Stream-of-Thought-Eingabe (Text)  
-- Automatisches Speichern als Markdown + Embedding  
-- Semantische Suche + kurze LLM-Zusammenfassung der Treffer  
-- Lokale Chroma-Vector-DB + SQLite-Metadaten  
-- NiceGUI-Web-Interface (browserbasiert, dark mode)
+## Inhaltsverzeichnis
 
-Noch nicht implementiert (Prioritäten für v0.2–v1.0):
+- [Features](#-features)
+- [Screenshots](#-screenshots)
+- [Installation](#-installation)
+- [Erster Start & Tipps](#-erster-start--tipps)
+- [Verwendung](#-verwendung)
+- [Entwicklungsstand & Roadmap](#-entwicklungsstand--roadmap)
+- [Technologie-Stack](#-technologie-stack)
+- [Lizenz](#-lizenz)
 
-- Globaler Hotkey + transluzentes Overlay-Fenster  
-- Voice-Input (faster-whisper)  
-- Echte Mini-Agenten mit Zeitplan  
-- Automatische wöchentliche Reflexion  
-- Decay-Logik + Merge-Vorschläge  
-- Auto-Linking bei neuem Eintrag  
-- Migration auf Tauri (native Desktop-App)
+## ✨ Features
 
-### Bekannte Limitationen / Anti-Features (bewusst so gewollt)
+| Feature                              | Status | Beschreibung                                                                                   |
+|:-------------------------------------|:------:|:-----------------------------------------------------------------------------------------------|
+| Stream-of-Thought Eingabe            |   ✓    | Großes Textfeld mit Auto-Save nach 8 s Inaktivität                                             |
+| Semantische Suche + LLM-Zusammenfassung |   ✓    | `nomic-embed-text-v1.5` + Ollama (z. B. qwen2.5:3b)                                            |
+| Manuelle & automatische Reflexion    |   ✓    | Wöchentliche Reflexion (manuell + auto beim Start prüfen)                                      |
+| Automatische Tageszusammenfassung    |   ✓    | Letzte 24 h – täglich beim Start generiert, wenn nicht vorhanden                               |
+| Auto-Linking & Merge                 |   ✓    | Ähnliche Gedanken (Cosine > 0.75) → Dialog → Merge (alte → archive/)                           |
+| Edit & Delete in Suchergebnissen     |   ✓    | Direkt aus der Suche bearbeiten oder löschen                                                   |
+| Tags per LLM                         |   ✓    | Beim Speichern 2–4 Tags automatisch generiert und gespeichert                                 |
+| Decay & Archivierung                 |   ✓    | >90 Tage alte, nicht referenzierte Notizen → automatisch archivieren                          |
+| ZIP-Export                           |   ✓    | Alle Notizen + DB + Chroma in einer Datei herunterladen                                        |
+| Tray-Icon + globaler Hotkey          |   ⚙     | (in Vorbereitung) Ctrl+Shift+Space → Overlay-Fenster                                           |
+| Voice-Input                          |   ⚙     | (geplant) Lokales Whisper → Text live einfügen                                                 |
 
-- Keine mobile App (und wahrscheinlich nie)  
-- Kein Multi-User / Sync (Cloud-Sync würde Privatsphäre brechen)  
-- Kein Graph-View, Kanban, Whiteboard etc.  
-- LLM-Zusammenfassungen können halluzinieren oder deinen Stil noch nicht perfekt treffen  
-- Keine automatische Verschlüsselung der data/-Ordner  
-- Aktuell nur Text-Eingabe (Voice & Overlay kommen später)
+<br>
 
-### Technologie-Entscheidungen
+## 📸 Screenshots
 
-| Komponente       | Wahl                              | Grund                                      |
-|------------------|-----------------------------------|--------------------------------------------|
-| UI               | NiceGUI                           | Sehr schnell zu prototypen, app-ähnlich    |
-| Vector-DB        | Chroma persistent                 | Leicht, Python-nativ                       |
-| Embeddings       | nomic-embed-text-v1.5             | Schnell & gut auf CPU                      |
-| LLM              | Qwen2.5 3B oder Phi-4 mini (4-bit)| Gute Balance Geschwindigkeit/Qualität      |
-| Speicher         | SQLite + flache .md-Dateien       | Volle Kontrolle über Rohdaten              |
+### Hauptansicht
 
-### Installation & Start (vollständige Anleitung)
+![Hauptansicht](https://via.placeholder.com/1200x700/111827/ffffff?text=ECHO+Hauptansicht+–+dunkles+Theme)  
+*(Eingabefeld, Suche, Schnellzugriff-Buttons)*
 
-1. **Ollama installieren** und ein kleines Modell ziehen  
-   Gehe auf https://ollama.com und installiere Ollama.  
-   Starte Ollama im Hintergrund (Terminal):
+### Reflexions-Dialog
 
-   ```bash
-   ollama serve          # im Hintergrund laufen lassen
-Ziehe ein passendes Modell (3B-Parameter-Modelle sind schnell genug):
-Bashollama pull qwen2.5:3b
-# Alternativen (etwas größer/langsamer, aber oft besser):
-# ollama pull phi4:mini
-# ollama pull gemma2:2b
+![Reflexion](https://via.placeholder.com/800x500/111827/ffffff?text=Wöchentliche+Reflexion+Dialog)  
 
-Repository klonenBashgit clone https://github.com/cdemkos/ECHO.git
+### Auto-Linking + Merge
+
+![Auto-Linking](https://via.placeholder.com/800x500/111827/ffffff?text=Auto-Linking+Merge+Dialog)  
+
+*(Platzhalter – ersetze später durch echte Screenshots aus deinem Browser)*
+
+<br>
+
+## 🚀 Installation
+
+1. **Voraussetzungen**
+
+   - Python 3.11 oder 3.12 (3.10 geht auch, 3.13 noch nicht getestet)
+   - Ollama installiert & läuft (`ollama serve`)
+   - Empfohlenes Ollama-Modell: `ollama pull qwen2.5:3b`
+
+2. **Repository klonen**
+
+
+git clone https://github.com/cdemkos/ECHO.git
+
 cd ECHO
-Virtuelle Umgebung erstellen (sehr empfohlen)Bashpython -m venv venv
+python -m venv venv
+source venv/bin/activate      # Linux/macOS
 
-# Windows:
-venv\Scripts\activate
+# Windows: venv\Scripts\activate
 
-# Linux / macOS:
-source venv/bin/activate
-Abhängigkeiten installierenBashpip install -r requirements.txt
+pip install -r requirements.txt
+Embedding-Modell einmalig vorladen (wichtig – verhindert langen ersten Start)Bash
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)"
+Starten
 
-# Falls du bei nomic-embed-text-v1.5 einen Fehler mit 'einops' bekommst:
-pip install einops
-Echo starten:
-Bash
 python main.py
-   ```bash
-   ollama pull qwen2.5:3b
-   # oder: ollama pull phi4:mini
-   # oder: ollama pull gemma2:2b
+
+Ollama läuft nicht?
+ollama serve & ollama pull qwen2.5:3b
+
+Zu wenig RAM?
+→ Verwende ein kleineres Ollama-Modell, z. B. ollama pull phi4:mini
+Dunkles Theme gefällt nicht?
+→ Entferne dark=True in ui.run() → NiceGUI wechselt automatisch zum System-Theme
 
 
-### Häufige Probleme & Fixes
 
-- "ModuleNotFoundError: No module named 'nicegui'": venv aktivieren und `pip install -r requirements.txt` erneut ausführen.
-- "LLM-Fehler" oder leere Zusammenfassungen: Stelle sicher, dass `ollama serve` läuft und das Modell (z. B. qwen2.5:3b) gezogen wurde.
-- "einops not found": `pip install einops` (selten, aber bei nomic-embed-text-v1.5 möglich).
+🛠 Verwendung
 
-### Wichtiger Hinweis zu Python-Version & Startzeit
+Gedanken festhalten → Textfeld → Enter oder 8 Sekunden warten
+Suche → semantisch → Zusammenfassung durch LLM
+Reflexion → Button „Wöchentliche Reflexion jetzt“
+Auto-Linking → Bei ähnlichen Gedanken öffnet sich Merge-Dialog
+Bearbeiten/Löschen → In Suchergebnissen pro Eintrag
+Export → Button „Alles exportieren (ZIP)“
 
-**Empfohlene Python-Version**: 3.11 oder 3.12  
-(3.10 geht auch, 3.13 noch nicht voll getestet, < 3.10 wird nicht empfohlen)
 
-**Warum dauert der erste Start manchmal 10–60 Sekunden?**  
-Beim allerersten Aufruf lädt NiceGUI + sentence-transformers das Embedding-Modell (~550 MB) von Hugging Face herunter.  
-Das passiert **nur einmal**. Danach startet ECHO in 1–3 Sekunden.
 
-**Tipp für schnelleren Start**:
-- Warte einfach beim ersten Mal (du siehst eine Meldung „Lade Embedding-Modell...“).
-- Oder lade das Modell manuell vorab
+🗺 Entwicklungsstand & Roadmap
+Aktuell (März 2026)
+
+Stabile Kernfunktionen
+Automatische Tages- & Wochenreflexion
+Decay & Archivierung
+Edit/Delete/Tags
+
+Geplant / in Arbeit
+
+ Tray-Icon + globaler Hotkey (Ctrl+Shift+Space → Overlay)
+ Voice-Input (lokales Whisper)
+ Mini-Agenten (regelbasierte Automatisierungen)
+ Graph-View der Gedankenverbindungen
+ Automatische tägliche Backups (lokal / Cloud)
+ Mobile-freundliches Design / PWA
+
+
+
+🛠 Technologie-Stack
+
+Frontend → NiceGUI (Python-basiertes UI)
+Embedding → nomic-embed-text-v1.5 (sentence-transformers)
+LLM → Ollama (lokal, z. B. qwen2.5:3b)
+Vektor-DB → Chroma (persistent)
+Speicher → Markdown-Dateien + SQLite Metadaten
