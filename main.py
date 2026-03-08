@@ -1,4 +1,4 @@
-# main.py – ECHO Kern + Reflexion + Export + Auto-Linking (Namensabfrage entfernt)
+# main.py – ECHO Kern + Reflexion + Export + Auto-Linking (komplett)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -41,9 +41,7 @@ async def index():
         ui.label('ECHO').classes('text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl')
         ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-2xl text-slate-300 mt-3 font-light italic')
 
-    # =====================================
     # Eingabe-Bereich
-    # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto shadow-2xl rounded-3xl bg-gradient-to-br from-slate-950 to-slate-900 border border-slate-700/50'):
         ui.label('Neuer Gedanke').classes('text-3xl font-bold mb-5 text-white text-center')
         thought_input = ui.textarea(
