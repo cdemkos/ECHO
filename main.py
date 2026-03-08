@@ -1,4 +1,4 @@
-# main.py – Echo Kern + Reflexion + Export + Auto-Linking (Scope-Fehler behoben)
+# main.py – Echo Kern + Reflexion + Export + Auto-Linking (mit verbessertem Titel & Button-Layout)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -24,28 +24,34 @@ NOTES_DIR.mkdir(parents=True, exist_ok=True)
 
 db = NoteDB()
 
-# Globale Referenzen für Dialoge (wichtig für Scope!)
+# Globale Referenzen für Dialoge
 reflection_dialog = None
 reflection_content = None
 linking_dialog = None
 linking_content = None
-merge_button = None  # wird später dynamisch gesetzt
+merge_button = None
 
 
 @ui.page('/')
 async def index():
     global reflection_dialog, reflection_content, linking_dialog, linking_content, merge_button
 
-    ui.label('Echo – dein lokaler Stream-of-Thought').classes('text-2xl font-bold mb-6 text-center')
+    # Browser-Tab-Titel setzen
+    ui.context.client.request.headers['title'] = 'Echo – dein lokaler Second Brain'
+
+    # Header mit klarem Titel
+    with ui.column().classes('items-center w-full mb-8'):
+        ui.label('Echo').classes('text-5xl font-black text-indigo-400 tracking-tight')
+        ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-xl text-slate-400 mt-1')
 
     # =====================================
     # Eingabe-Bereich
     # =====================================
-    with ui.card().classes('w-full max-w-4xl mx-auto shadow-lg'):
-        ui.label('Neuer Gedanke (Stream-of-Thought)').classes('text-xl mb-2')
+    with ui.card().classes('w-full max-w-4xl mx-auto shadow-xl rounded-xl'):
+        ui.label('Neuer Gedanke').classes('text-2xl font-bold mb-3 text-slate-200')
         thought_input = ui.textarea(
             placeholder='Schreib einfach drauflos... (Enter oder Auto-Save nach 8 Sekunden Inaktivität)'
-        ).props('autogrow outlined clearable').classes('w-full min-h-48')
+        ).props('autogrow outlined clearable bordered').classes('w-full min-h-56 bg-slate-800 text-slate-100')
 
         auto_save_timer = None
 
@@ -93,15 +99,18 @@ async def index():
         thought_input.on('focus', reset_auto_save_timer)
 
         ui.button('Manuell speichern', on_click=lambda: save_thought(auto=False)) \
-            .props('unelevated color=green-9').classes('mt-4')
+            .props('unelevated color=green-7').classes('mt-4 w-full md:w-auto')
 
-    # Suche-Bereich (unverändert)
-    with ui.card().classes('w-full max-w-4xl mx-auto mt-4 shadow-lg'):
-        ui.label('Suche in deinem Echo').classes('text-xl mb-2')
-        search_input = ui.input(placeholder='z. B. "Gedanken zu Japan Reise letzten 3 Monate"') \
-            .props('outlined dense').classes('w-full')
+    # =====================================
+    # Suche-Bereich
+    # =====================================
+    with ui.card().classes('w-full max-w-4xl mx-auto mt-6 shadow-xl rounded-xl'):
+        ui.label('Suche in deinem Echo').classes('text-2xl font-bold mb-3 text-slate-200')
+        search_input = ui.input(
+            placeholder='z. B. "Gedanken zu Japan Reise letzten 3 Monate"'
+        ).props('outlined dense clearable').classes('w-full')
 
-        result_area = ui.markdown().classes('mt-4 prose prose-slate max-w-none dark:prose-invert')
+        result_area = ui.markdown().classes('mt-6 prose prose-slate max-w-none dark:prose-invert')
 
         async def perform_search():
             query = search_input.value.strip()
@@ -138,17 +147,25 @@ async def index():
                 ui.notify(f'Suchfehler: {str(e)}', type='negative')
 
         ui.button('Suchen', on_click=perform_search) \
-            .props('unelevated color=blue-9').classes('mt-4')
+            .props('unelevated color=blue-7').classes('mt-4 w-full md:w-auto')
 
     # =====================================
-    # Reflexion & Export Buttons
+    # Reflexion & Export – zentral & prominent
     # =====================================
-    with ui.row().classes('justify-center gap-6 mt-8'):
-        ui.button('Wöchentliche Reflexion jetzt', on_click=generate_weekly_reflection) \
-            .props('unelevated color=indigo-9 outline').classes('text-lg px-8 py-4')
+    with ui.card().classes('w-full max-w-4xl mx-auto mt-10 shadow-2xl rounded-xl bg-slate-800/50 border border-slate-700'):
+        ui.label('Schnellzugriff').classes('text-xl font-semibold text-center text-slate-300 mb-6')
+        with ui.row().classes('justify-center gap-8 flex-wrap'):
+            ui.button(
+                icon='auto_awesome',
+                label='Wöchentliche Reflexion jetzt',
+                on_click=generate_weekly_reflection
+            ).props('unelevated color=indigo-8 size=lg').classes('min-w-64')
 
-        ui.button('Alles exportieren (ZIP)', on_click=export_all) \
-            .props('unelevated color=amber-9 outline').classes('text-lg px-8 py-4')
+            ui.button(
+                icon='download',
+                label='Alles exportieren (ZIP)',
+                on_click=export_all
+            ).props('unelevated color=amber-8 size=lg').classes('min-w-64')
 
     # =====================================
     # Reflexions-Dialog
@@ -159,7 +176,7 @@ async def index():
             ui.label('Wöchentliche Reflexion').classes('text-2xl font-bold mb-4')
             reflection_content = ui.markdown().classes('prose prose-slate max-w-none dark:prose-invert')
             ui.button('Schließen', on_click=lambda: setattr(reflection_dialog, 'value', False)) \
-                .props('unelevated color=grey-8').classes('mt-6')
+                .props('unelevated color=grey-8').classes('mt-6 w-full md:w-auto')
 
     # =====================================
     # Auto-Linking Dialog
@@ -169,84 +186,76 @@ async def index():
         with ui.card().classes('w-full max-w-4xl'):
             ui.label('Mögliche Verknüpfungen gefunden').classes('text-2xl font-bold mb-4')
             linking_content = ui.markdown().classes('prose prose-slate max-w-none dark:prose-invert')
-            with ui.row().classes('gap-4 mt-6'):
+            with ui.row().classes('gap-4 mt-6 justify-end'):
                 ui.button('Keine Verknüpfung', on_click=lambda: setattr(linking_dialog, 'value', False)) \
                     .props('unelevated color=grey-8')
                 merge_button = ui.button('Alle mergen', on_click=lambda: setattr(linking_dialog, 'value', False)) \
                     .props('unelevated color=teal-9')
 
-    # Merge-Logik (wird später dynamisch verbunden)
-    async def do_merge():
-        # ... (siehe unten in check_auto_linking)
-        pass
 
-    # =====================================
-    # Auto-Linking Funktion
-    # =====================================
-    async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
-        try:
-            query_results = db.collection.query(
-                query_embeddings=[new_embedding],
-                n_results=5,
-                include=['metadatas', 'documents', 'distances']
-            )
+async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
+    try:
+        query_results = db.collection.query(
+            query_embeddings=[new_embedding],
+            n_results=5,
+            include=['metadatas', 'documents', 'distances']
+        )
 
-            similar = []
-            for i in range(len(query_results['ids'][0])):
-                sim = 1 - query_results['distances'][0][i]
-                if sim > 0.75 and query_results['ids'][0][i] != new_note_id:
-                    id_ = query_results['ids'][0][i]
-                    db.cursor.execute("SELECT timestamp, text, file_path FROM notes WHERE id = ?", (id_,))
-                    row = db.cursor.fetchone()
-                    if row:
-                        similar.append({
-                            'id': id_,
-                            'timestamp': row[0],
-                            'text': row[1][:300] + '...',
-                            'similarity': sim,
-                            'file_path': row[2]
-                        })
+        similar = []
+        for i in range(len(query_results['ids'][0])):
+            sim = 1 - query_results['distances'][0][i]
+            if sim > 0.75 and query_results['ids'][0][i] != new_note_id:
+                id_ = query_results['ids'][0][i]
+                db.cursor.execute("SELECT timestamp, text, file_path FROM notes WHERE id = ?", (id_,))
+                row = db.cursor.fetchone()
+                if row:
+                    similar.append({
+                        'id': id_,
+                        'timestamp': row[0],
+                        'text': row[1][:300] + '...',
+                        'similarity': sim,
+                        'file_path': row[2]
+                    })
 
-            if not similar:
-                return
+        if not similar:
+            return
 
-            content = "**Sehr ähnliche Gedanken gefunden (Ähnlichkeit > 75 %):**\n\n"
+        content = "**Sehr ähnliche Gedanken gefunden (Ähnlichkeit > 75 %):**\n\n"
+        for entry in similar:
+            content += f"- **{entry['timestamp']}** ({entry['similarity']:.2%})\n  {entry['text']}\n\n"
+
+        content += "Möchtest du diese Einträge mergen? (Alte werden archiviert)"
+
+        linking_content.content = content
+        linking_dialog.value = True
+
+        async def do_merge():
+            merged_text = new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
             for entry in similar:
-                content += f"- **{entry['timestamp']}** ({entry['similarity']:.2%})\n  {entry['text']}\n\n"
+                merged_text += f"[{entry['timestamp']}] {entry['text']}\n\n---\n\n"
+                old_path = Path(entry['file_path'])
+                if old_path.exists():
+                    shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
+                db.collection.delete(ids=[entry['id']])
+                db.cursor.execute("DELETE FROM notes WHERE id = ?", (entry['id'],))
+                db.conn.commit()
 
-            content += "Möchtest du diese Einträge mergen? (Alte werden archiviert)"
+            timestamp = datetime.now().isoformat()
+            note_id = str(uuid.uuid4())[:12]
+            filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_MERGED.md"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"# Gemergter Gedanke – {timestamp}\n\n{merged_text}")
 
-            linking_content.content = content
-            linking_dialog.value = True
+            embedding = get_embedding(merged_text)
+            db.add_note(note_id, timestamp, merged_text, str(filename), embedding)
 
-            # Merge-Button dynamisch verbinden
-            async def do_merge():
-                merged_text = new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
-                for entry in similar:
-                    merged_text += f"[{entry['timestamp']}] {entry['text']}\n\n---\n\n"
-                    old_path = Path(entry['file_path'])
-                    if old_path.exists():
-                        shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
-                    db.collection.delete(ids=[entry['id']])
-                    db.cursor.execute("DELETE FROM notes WHERE id = ?", (entry['id'],))
-                    db.conn.commit()
+            ui.notify('Einträge erfolgreich gemergt & archiviert', type='positive')
+            linking_dialog.value = False
 
-                timestamp = datetime.now().isoformat()
-                note_id = str(uuid.uuid4())[:12]
-                filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_MERGED.md"
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(f"# Gemergter Gedanke – {timestamp}\n\n{merged_text}")
+        merge_button.on('click', do_merge)
 
-                embedding = get_embedding(merged_text)
-                db.add_note(note_id, timestamp, merged_text, str(filename), embedding)
-
-                ui.notify('Einträge erfolgreich gemergt & archiviert', type='positive')
-                linking_dialog.value = False
-
-            merge_button.on('click', do_merge)
-
-        except Exception as e:
-            ui.notify(f'Auto-Linking fehlgeschlagen: {str(e)}', type='negative')
+    except Exception as e:
+        ui.notify(f'Auto-Linking fehlgeschlagen: {str(e)}', type='negative')
 
 
 async def generate_weekly_reflection():
@@ -320,4 +329,4 @@ async def export_all():
         ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
 
 
-ui.run(title='Echo – Second Brain', port=9876, dark=True, reload=True, show=True)
+ui.run(title='Echo – dein lokaler Second Brain', port=9876, dark=True, reload=True, show=True)
