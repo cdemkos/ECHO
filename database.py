@@ -1,5 +1,5 @@
 # database.py – mit lazy-loading (verhindert Timeout beim Start)
-
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 import chromadb
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
