@@ -1,4 +1,5 @@
-# main.py – Echo Kern + Reflexion + Export + Auto-Linking (mit verbessertem Titel & Button-Layout)
+# main.py – Echo Kern + Reflexion + Export + Auto-Linking
+# Korrigiert: Browser-Tab-Titel richtig setzen (März 2026)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -35,9 +36,6 @@ merge_button = None
 @ui.page('/')
 async def index():
     global reflection_dialog, reflection_content, linking_dialog, linking_content, merge_button
-
-    # Browser-Tab-Titel setzen
-    ui.context.client.request.headers['title'] = 'Echo – dein lokaler Second Brain'
 
     # Header mit klarem Titel
     with ui.column().classes('items-center w-full mb-8'):
@@ -101,9 +99,7 @@ async def index():
         ui.button('Manuell speichern', on_click=lambda: save_thought(auto=False)) \
             .props('unelevated color=green-7').classes('mt-4 w-full md:w-auto')
 
-    # =====================================
     # Suche-Bereich
-    # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto mt-6 shadow-xl rounded-xl'):
         ui.label('Suche in deinem Echo').classes('text-2xl font-bold mb-3 text-slate-200')
         search_input = ui.input(
@@ -167,9 +163,7 @@ async def index():
                 on_click=export_all
             ).props('unelevated color=amber-8 size=lg').classes('min-w-64')
 
-    # =====================================
     # Reflexions-Dialog
-    # =====================================
     reflection_dialog = ui.dialog(value=False).props('persistent')
     with reflection_dialog:
         with ui.card().classes('w-full max-w-4xl'):
@@ -178,9 +172,7 @@ async def index():
             ui.button('Schließen', on_click=lambda: setattr(reflection_dialog, 'value', False)) \
                 .props('unelevated color=grey-8').classes('mt-6 w-full md:w-auto')
 
-    # =====================================
     # Auto-Linking Dialog
-    # =====================================
     linking_dialog = ui.dialog(value=False).props('persistent')
     with linking_dialog:
         with ui.card().classes('w-full max-w-4xl'):
@@ -189,8 +181,8 @@ async def index():
             with ui.row().classes('gap-4 mt-6 justify-end'):
                 ui.button('Keine Verknüpfung', on_click=lambda: setattr(linking_dialog, 'value', False)) \
                     .props('unelevated color=grey-8')
-                merge_button = ui.button('Alle mergen', on_click=lambda: setattr(linking_dialog, 'value', False)) \
-                    .props('unelevated color=teal-9')
+                merge_button = ui.button('Alle mergen', color='teal-9').props('unelevated') \
+                    .classes('text-white')
 
 
 async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
@@ -329,4 +321,11 @@ async def export_all():
         ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
 
 
-ui.run(title='Echo – dein lokaler Second Brain', port=9876, dark=True, reload=True, show=True)
+# Start mit klarem Browser-Tab-Titel
+ui.run(
+    title='Echo – dein lokaler Second Brain',
+    port=9876,
+    dark=True,
+    reload=True,
+    show=True
+)
