@@ -55,11 +55,34 @@ Noch nicht implementiert (Prioritäten für v0.2–v1.0):
 | LLM              | Qwen2.5 3B oder Phi-4 mini (4-bit)| Gute Balance Geschwindigkeit/Qualität      |
 | Speicher         | SQLite + flache .md-Dateien       | Volle Kontrolle über Rohdaten              |
 
-### Installation & Start
+### Installation & Start (vollständige Anleitung)
 
-1. **Ollama installieren** und Modell ziehen  
-   https://ollama.com
+1. **Ollama installieren** und ein kleines Modell ziehen  
+   Gehe auf https://ollama.com und installiere Ollama.  
+   Starte Ollama im Hintergrund (Terminal):
 
+   ```bash
+   ollama serve          # im Hintergrund laufen lassen
+Ziehe ein passendes Modell (3B-Parameter-Modelle sind schnell genug):
+Bashollama pull qwen2.5:3b
+# Alternativen (etwas größer/langsamer, aber oft besser):
+# ollama pull phi4:mini
+# ollama pull gemma2:2b
+
+Repository klonenBashgit clone https://github.com/cdemkos/ECHO.git
+cd ECHO
+Virtuelle Umgebung erstellen (sehr empfohlen)Bashpython -m venv venv
+
+# Windows:
+venv\Scripts\activate
+
+# Linux / macOS:
+source venv/bin/activate
+Abhängigkeiten installierenBashpip install -r requirements.txt
+
+# Falls du bei nomic-embed-text-v1.5 einen Fehler mit 'einops' bekommst:
+pip install einops
+Echo startenBashpython main.py
    ```bash
    ollama pull qwen2.5:3b
    # oder: ollama pull phi4:mini
