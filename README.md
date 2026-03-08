@@ -94,3 +94,18 @@ Echo startenBashpython main.py
 - "ModuleNotFoundError: No module named 'nicegui'": venv aktivieren und `pip install -r requirements.txt` erneut ausführen.
 - "LLM-Fehler" oder leere Zusammenfassungen: Stelle sicher, dass `ollama serve` läuft und das Modell (z. B. qwen2.5:3b) gezogen wurde.
 - "einops not found": `pip install einops` (selten, aber bei nomic-embed-text-v1.5 möglich).
+
+### Wichtiger Hinweis zu Python-Version & Startzeit
+
+**Empfohlene Python-Version**: 3.11 oder 3.12  
+(3.10 geht auch, 3.13 noch nicht voll getestet, < 3.10 wird nicht empfohlen)
+
+**Warum dauert der erste Start manchmal 10–60 Sekunden?**  
+Beim allerersten Aufruf lädt NiceGUI + sentence-transformers das Embedding-Modell (~550 MB) von Hugging Face herunter.  
+Das passiert **nur einmal**. Danach startet ECHO in 1–3 Sekunden.
+
+**Tipp für schnelleren Start**:
+- Warte einfach beim ersten Mal (du siehst eine Meldung „Lade Embedding-Modell...“).
+- Oder lade das Modell manuell vorab:
+  ```bash
+  python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)"
