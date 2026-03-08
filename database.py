@@ -1,4 +1,4 @@
-# database.py – mit lazy model
+# database.py – lazy model loading (verhindert Startup-Timeout)
 
 import chromadb
 from pathlib import Path
@@ -30,9 +30,9 @@ class NoteDB:
     @property
     def model(self):
         if self._model is None:
-            ui.notify('Lade Embedding-Modell (einmalig, bitte warten...)', type='ongoing')
+            print("Lade Embedding-Modell (einmalig, bitte warten...)")
             self._model = SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)
-            ui.notify('Embedding-Modell geladen!', type='positive')
+            print("Embedding-Modell geladen!")
         return self._model
 
     def add_note(self, note_id: str, timestamp: str, text: str, file_path: str, embedding: list):
