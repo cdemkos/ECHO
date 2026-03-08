@@ -4,7 +4,7 @@ sentence-transformers==3.3.1   # Embedding-Modell (nomic-embed-text-v1.5)
 ollama==0.4.7                  # Python-Client für Ollama (LLM-Zusammenfassungen)
 pydantic==2.10.6               # Datenvalidierung (wird von vielen Libs benötigt)
 python-dateutil==2.9.0         # Datumshandling (für Timestamps & timedelta)
-
+einops>=0.8.0
 # Optional, aber empfohlen für Tray-Icon / Overlay (später)
 pillow>=10.0.0                 # Bildverarbeitung (für Tray-Icons)
 pystray>=0.19.5                # System-Tray-Icon (zukünftig)
