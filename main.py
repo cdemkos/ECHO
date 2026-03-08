@@ -1,5 +1,8 @@
-# main.py – ECHO Second Brain (komplett – alle Features integriert, ohne Namensabfrage)
+# main.py – ECHO Second Brain (komplett – alle Features integriert)
 # Stand: März 2026
+# Features: Auto-Save, Suche + LLM-Zusammenfassung, manuelle & auto Reflexion,
+#           Tageszusammenfassung auto, Auto-Linking + Merge, Edit/Delete,
+#           Tags per LLM, Decay & Archivierung
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -9,6 +12,7 @@ import zipfile
 import io
 import os
 import shutil
+import json
 
 # Lokale Module
 from database import NoteDB
@@ -490,7 +494,7 @@ async def export_all():
 
 
 # =====================================================================
-# Hilfsfunktionen für Edit & Delete (aus vorheriger Iteration)
+# Hilfsfunktionen für Edit & Delete
 # =====================================================================
 
 async def edit_note(hit):
