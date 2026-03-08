@@ -1,4 +1,4 @@
-# main.py – Echo Kern + Reflexion + Export (Stand März 2026)
+# main.py – Echo Kern + Reflexion + Export (komplett korrigiert – März 2026)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -6,9 +6,9 @@ import uuid
 from pathlib import Path
 import zipfile
 import io
-import shutil
 import os
 
+# Lokale Module
 from database import NoteDB
 from llm import generate_summary
 from embedder import get_embedding
@@ -26,19 +26,19 @@ async def index():
     ui.label('Echo – dein lokaler Stream-of-Thought').classes('text-2xl font-bold mb-6 text-center')
 
     # =====================================
-    # Eingabe-Bereich (unverändert)
+    # Eingabe-Bereich
     # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto shadow-lg'):
         ui.label('Neuer Gedanke (Stream-of-Thought)').classes('text-xl mb-2')
         thought_input = ui.textarea(
-            placeholder='Schreib einfach drauflos... (Enter oder Auto-Save nach 8 Sekunden)'
+            placeholder='Schreib einfach drauflos... (Enter oder Auto-Save nach 8 Sekunden Inaktivität)'
         ).props('autogrow outlined clearable').classes('w-full min-h-48')
 
-        last_change = None
+        # Timer für Auto-Save
         auto_save_timer = None
 
         async def save_thought(auto: bool = False):
-            nonlocal last_change, auto_save_timer
+            nonlocal auto_save_timer
             text = thought_input.value.strip()
             if not text:
                 if not auto:
@@ -66,13 +66,19 @@ async def index():
             except Exception as e:
                 ui.notify(f'Speichern fehlgeschlagen: {str(e)}', type='negative')
 
+        # Enter = manuelles Speichern
         thought_input.on('keydown.enter', lambda: save_thought(auto=False))
 
+        # Auto-Save Timer zurücksetzen bei jeder Eingabe
         def reset_auto_save_timer():
             nonlocal auto_save_timer
             if auto_save_timer:
                 auto_save_timer.cancel()
-            auto_save_timer = ui.timer(8.0, lambda: save_thought(auto=True), once=True)
+            auto_save_timer = ui.timer(
+                8.0,
+                lambda: save_thought(auto=True),
+                once=True
+            )
 
         thought_input.on('input', reset_auto_save_timer)
         thought_input.on('focus', reset_auto_save_timer)
@@ -81,12 +87,13 @@ async def index():
             .props('unelevated color=green-9').classes('mt-4')
 
     # =====================================
-    # Suche-Bereich (unverändert)
+    # Suche-Bereich
     # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto mt-4 shadow-lg'):
         ui.label('Suche in deinem Echo').classes('text-xl mb-2')
-        search_input = ui.input(placeholder='z. B. "Gedanken zu Japan Reise letzten 3 Monate"') \
-            .props('outlined dense').classes('w-full')
+        search_input = ui.input(
+            placeholder='z. B. "Gedanken zu Japan Reise letzten 3 Monate"'
+        ).props('outlined dense').classes('w-full')
 
         result_area = ui.markdown().classes('mt-4 prose prose-slate max-w-none dark:prose-invert')
 
@@ -128,7 +135,7 @@ async def index():
             .props('unelevated color=blue-9').classes('mt-4')
 
     # =====================================
-    # Neue Buttons: Reflexion & Export
+    # Reflexion & Export Buttons
     # =====================================
     with ui.row().classes('justify-center gap-6 mt-8'):
         ui.button('Wöchentliche Reflexion jetzt', on_click=generate_weekly_reflection) \
@@ -137,19 +144,20 @@ async def index():
         ui.button('Alles exportieren (ZIP)', on_click=export_all) \
             .props('unelevated color=amber-9 outline').classes('text-lg px-8 py-4')
 
-    # Dialog für Reflexions-Anzeige
+    # =====================================
+    # Reflexions-Dialog
+    # =====================================
     with ui.dialog(value=False).props('persistent') as reflection_dialog:
         with ui.card().classes('w-full max-w-4xl'):
             ui.label('Wöchentliche Reflexion').classes('text-2xl font-bold mb-4')
             reflection_content = ui.markdown().classes('prose prose-slate max-w-none dark:prose-invert')
-            ui.button('Schließen', on_click=reflection_dialog.hide) \
+            ui.button('Schließen', on_click=lambda: setattr(reflection_dialog, 'value', False)) \
                 .props('unelevated color=grey-8').classes('mt-6')
 
 
 async def generate_weekly_reflection():
     try:
         since = (datetime.now() - timedelta(days=7)).isoformat()
-        # Alle Notizen der letzten 7 Tage holen
         db.cursor.execute("SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp", (since,))
         entries = db.cursor.fetchall()
 
@@ -186,7 +194,7 @@ async def generate_weekly_reflection():
 
         # Im Dialog anzeigen
         reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
-        reflection_dialog.open()
+        reflection_dialog.value = True  # Dialog öffnen
 
         ui.notify('Reflexion generiert & gespeichert', type='positive')
 
@@ -203,21 +211,33 @@ async def export_all():
                 zip_file.write(md_file, arcname=f"notes/{md_file.name}")
 
             # SQLite-Datenbank
-            zip_file.write('data/echo.db', arcname='data/echo.db')
+            if Path('data/echo.db').exists():
+                zip_file.write('data/echo.db', arcname='data/echo.db')
 
-            # Chroma-Ordner (komplett)
-            for root, _, files in os.walk(CHROMA_DIR):
-                for file in files:
-                    file_path = Path(root) / file
-                    arc_path = file_path.relative_to(DATA_DIR)
-                    zip_file.write(file_path, arcname=str(arc_path))
+            # Chroma-Ordner komplett
+            if CHROMA_DIR.exists():
+                for root, _, files in os.walk(CHROMA_DIR):
+                    for file in files:
+                        file_path = Path(root) / file
+                        arc_path = file_path.relative_to(DATA_DIR)
+                        zip_file.write(file_path, arcname=str(arc_path))
 
         zip_buffer.seek(0)
-        ui.download(zip_buffer.read(), filename=f"echo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
-        ui.notify('Export abgeschlossen – ZIP wird heruntergeladen', type='positive')
+        filename = f"echo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        ui.download(zip_buffer.read(), filename=filename)
+        ui.notify(f'Export abgeschlossen – {filename} wird heruntergeladen', type='positive')
 
     except Exception as e:
         ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
 
 
-ui.run(title='Echo – Second Brain', port=9876, dark=True, reload=True, show=True)
+# =====================================
+# Start
+# =====================================
+ui.run(
+    title='Echo – Second Brain',
+    port=9876,
+    dark=True,
+    reload=True,
+    show=True
+)
