@@ -1,4 +1,4 @@
-# main.py – ECHO Kern + Reflexion + Export + Auto-Linking (Buttons final harmonisiert – Variante 1)
+# main.py – ECHO Kern + Reflexion + Export + Auto-Linking + persönlicher Name (März 2026)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -8,6 +8,7 @@ import zipfile
 import io
 import os
 import shutil
+import json
 
 # Lokale Module
 from database import NoteDB
@@ -18,8 +19,9 @@ DATA_DIR = Path("data")
 NOTES_DIR = DATA_DIR / "notes"
 CHROMA_DIR = DATA_DIR / "chroma"
 ARCHIVE_DIR = DATA_DIR / "archive"
-ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+USER_FILE = DATA_DIR / "user.json"
 
+ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 NOTES_DIR.mkdir(parents=True, exist_ok=True)
 
 db = NoteDB()
@@ -31,15 +33,73 @@ linking_dialog = None
 linking_content = None
 merge_button = None
 
+# =====================================
+# Benutzername laden / abfragen
+# =====================================
+def load_username():
+    if USER_FILE.exists():
+        try:
+            with open(USER_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('name', 'du')
+        except:
+            return 'du'
+    return None
+
+
+def save_username(name: str):
+    USER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(USER_FILE, 'w', encoding='utf-8') as f:
+        json.dump({'name': name.strip()}, f, ensure_ascii=False, indent=2)
+
+
+# =====================================
+# Start-Dialog für den Namen (nur beim ersten Mal)
+# =====================================
+async def ask_for_username():
+    username = load_username()
+    if username is not None:
+        return username
+
+    with ui.dialog(value=True).props('persistent') as name_dialog:
+        with ui.card().classes('w-full max-w-md'):
+            ui.label('Hallo! Schön dich kennenzulernen 😊').classes('text-2xl font-bold mb-4 text-center')
+            ui.label('Wie darf ich dich nennen?').classes('text-lg text-center mb-6')
+            name_input = ui.input(placeholder='z. B. Cdemkos oder Alex').props('outlined clearable').classes('w-full')
+            ui.button('Los geht’s', on_click=lambda: name_dialog.hide()).props('unelevated color=indigo-8').classes('mt-6 w-full')
+
+            async def save_and_close():
+                name = name_input.value.strip()
+                if name:
+                    save_username(name)
+                    ui.notify(f'Hallo {name}! Freut mich sehr.', type='positive')
+                else:
+                    ui.notify('Ohne Namen geht’s auch – ich nenne dich dann einfach „du“ 😄', type='info')
+                    save_username('du')
+                name_dialog.hide()
+
+            ui.button('Los geht’s', on_click=save_and_close).props('unelevated color=indigo-8').classes('mt-6 w-full')
+
+    # Warte, bis Dialog geschlossen ist
+    await name_dialog
+    return load_username() or 'du'
+
+
+# Lade oder frage den Namen beim Start
+current_user = None
+
 
 @ui.page('/')
 async def index():
-    global reflection_dialog, reflection_content, linking_dialog, linking_content, merge_button
+    global reflection_dialog, reflection_content, linking_dialog, linking_content, merge_button, current_user
 
-    # Header – groß, mittig, mit Glow
+    if current_user is None:
+        current_user = await ask_for_username()
+
+    # Header
     with ui.column().classes('items-center w-full mb-12'):
         ui.label('ECHO').classes('text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl')
-        ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-2xl text-slate-300 mt-3 font-light italic')
+        ui.label(f'Hallo {current_user} – dein lokaler Second Brain').classes('text-2xl text-slate-300 mt-3 font-light italic')
 
     # =====================================
     # Eingabe-Bereich
@@ -72,7 +132,7 @@ async def index():
                 db.add_note(note_id, timestamp, text, str(filename), embedding)
 
                 ui.notify(
-                    f'Gedanke gespeichert → {note_id[:8]}' + (' (Auto-Save)' if auto else ''),
+                    f'{current_user}, Gedanke gespeichert → {note_id[:8]}' + (' (Auto-Save)' if auto else ''),
                     type='positive',
                     close_button=True
                 )
@@ -125,7 +185,7 @@ async def index():
                 context_parts = [f"**{hit['timestamp']}**  \n{hit['text'][:450]}..." for hit in hits]
                 context = "\n\n".join(context_parts)
                 summary_prompt = (
-                    "Fasse ehrlich und knapp zusammen, was der Nutzer zu diesem Thema gedacht hat. "
+                    f"Fasse ehrlich und knapp zusammen, was {current_user} zu diesem Thema gedacht hat. "
                     "Nenne wiederkehrende Muster, emotionale Tonalität und offene Fragen. "
                     "Strukturiere mit Aufzählungspunkten wenn sinnvoll.\n\n"
                     f"Suchanfrage: {query}\n\n{context}"
@@ -133,7 +193,7 @@ async def index():
                 summary = await generate_summary(summary_prompt)
 
                 result_area.content = (
-                    f"**Zusammenfassung:**\n\n{summary}\n\n"
+                    f"**Zusammenfassung für {current_user}:**\n\n{summary}\n\n"
                     f"---\n\n**Gefundene Einträge:**\n\n"
                     + "\n\n".join(context_parts)
                 )
@@ -144,9 +204,7 @@ async def index():
         ui.button('Suchen', on_click=perform_search) \
             .props('unelevated color=blue-600 rounded-xl').classes('mt-6 w-full md:w-1/3 mx-auto text-lg hover:scale-105 transition-transform')
 
-    # =====================================
-    # Schnellzugriff – erste Variante: rechteckig, harmonisch zu oberen Buttons
-    # =====================================
+    # Schnellzugriff-Card
     with ui.card().classes('w-full max-w-4xl mx-auto mt-12 shadow-2xl rounded-3xl bg-gradient-to-r from-indigo-950/70 to-slate-950/70 border border-indigo-700/30 backdrop-blur-sm'):
         ui.label('Schnellzugriff').classes('text-2xl font-bold text-center text-indigo-300 mb-8')
         with ui.row().classes('justify-center gap-12 flex-wrap px-8 py-6'):
@@ -211,7 +269,7 @@ async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: lis
         if not similar:
             return
 
-        content = "**Sehr ähnliche Gedanken gefunden (Ähnlichkeit > 75 %):**\n\n"
+        content = f"**Hallo {current_user}, sehr ähnliche Gedanken gefunden (Ähnlichkeit > 75 %):**\n\n"
         for entry in similar:
             content += f"- **{entry['timestamp']}** ({entry['similarity']:.2%})\n  {entry['text']}\n\n"
 
@@ -221,7 +279,7 @@ async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: lis
         linking_dialog.value = True
 
         async def do_merge():
-            merged_text = new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
+            merged_text = f"Hallo {current_user}, hier dein gemergter Gedanke:\n\n" + new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
             for entry in similar:
                 merged_text += f"[{entry['timestamp']}] {entry['text']}\n\n---\n\n"
                 old_path = Path(entry['file_path'])
@@ -240,7 +298,7 @@ async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: lis
             embedding = get_embedding(merged_text)
             db.add_note(note_id, timestamp, merged_text, str(filename), embedding)
 
-            ui.notify('Einträge erfolgreich gemergt & archiviert', type='positive')
+            ui.notify(f'{current_user}, Einträge erfolgreich gemergt & archiviert', type='positive')
             linking_dialog.value = False
 
         merge_button.on('click', do_merge)
@@ -256,19 +314,19 @@ async def generate_weekly_reflection():
         entries = db.cursor.fetchall()
 
         if not entries:
-            ui.notify('Keine Notizen in den letzten 7 Tagen gefunden.', type='warning')
+            ui.notify(f'{current_user}, keine Notizen in den letzten 7 Tagen gefunden.', type='warning')
             return
 
         context = "\n\n".join([f"[{ts}] {text[:600]}..." for ts, text in entries])
         prompt = (
-            "Du bist ein ehrlicher, reflektierender Coach. "
-            "Analysiere die folgenden Gedanken der letzten Woche:\n\n"
+            f"Du bist ein ehrlicher, reflektierender Coach. "
+            f"Analysiere die folgenden Gedanken von {current_user} der letzten Woche:\n\n"
             f"{context}\n\n"
             "- Welche Themen tauchen wiederholt auf?\n"
             "- Welche emotionale Tonalität dominiert (Frust, Neugier, Stolz, Angst, …)?\n"
             "- Welche Muster, Gewohnheiten oder offene Loops siehst du?\n"
             "- Was wurde verschoben, ignoriert oder bereut?\n"
-            "- Was könnte der Nutzer nächste Woche anders / besser machen?\n\n"
+            "- Was könnte {current_user} nächste Woche anders / besser machen?\n\n"
             "Strukturiere die Antwort klar mit Überschriften und Aufzählungspunkten. "
             "Sei direkt, aber wohlwollend – keine Schönfärberei."
         )
@@ -280,7 +338,7 @@ async def generate_weekly_reflection():
         filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_REFLEXION.md"
 
         with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# Wöchentliche Reflexion – {timestamp}\n\n{reflection_text}")
+            f.write(f"# Wöchentliche Reflexion für {current_user} – {timestamp}\n\n{reflection_text}")
 
         embedding = get_embedding(reflection_text)
         db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
@@ -288,7 +346,7 @@ async def generate_weekly_reflection():
         reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
         reflection_dialog.value = True
 
-        ui.notify('Reflexion generiert & gespeichert', type='positive')
+        ui.notify(f'{current_user}, Reflexion generiert & gespeichert', type='positive')
 
     except Exception as e:
         ui.notify(f'Reflexion fehlgeschlagen: {str(e)}', type='negative')
@@ -314,7 +372,7 @@ async def export_all():
         zip_buffer.seek(0)
         filename = f"echo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         ui.download(zip_buffer.read(), filename=filename)
-        ui.notify(f'Export abgeschlossen – {filename}', type='positive')
+        ui.notify(f'{current_user}, Export abgeschlossen – {filename}', type='positive')
 
     except Exception as e:
         ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
