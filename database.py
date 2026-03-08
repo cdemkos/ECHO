@@ -1,4 +1,4 @@
-# database.py – lazy model loading (verhindert Startup-Timeout)
+# database.py – mit lazy-loading (verhindert Timeout beim Start)
 
 import chromadb
 from pathlib import Path
