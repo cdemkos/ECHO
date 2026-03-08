@@ -1,5 +1,4 @@
-# main.py – Echo Kern + Reflexion + Export + Auto-Linking
-# Korrigiert: Browser-Tab-Titel richtig setzen (März 2026)
+# main.py – Echo Kern + Reflexion + Export + Auto-Linking (NiceGUI 2.x kompatibel)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -10,7 +9,6 @@ import io
 import os
 import shutil
 
-# Lokale Module
 from database import NoteDB
 from llm import generate_summary
 from embedder import get_embedding
@@ -25,7 +23,6 @@ NOTES_DIR.mkdir(parents=True, exist_ok=True)
 
 db = NoteDB()
 
-# Globale Referenzen für Dialoge
 reflection_dialog = None
 reflection_content = None
 linking_dialog = None
@@ -37,14 +34,12 @@ merge_button = None
 async def index():
     global reflection_dialog, reflection_content, linking_dialog, linking_content, merge_button
 
-    # Header mit klarem Titel
+    # Header
     with ui.column().classes('items-center w-full mb-8'):
         ui.label('Echo').classes('text-5xl font-black text-indigo-400 tracking-tight')
         ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-xl text-slate-400 mt-1')
 
-    # =====================================
     # Eingabe-Bereich
-    # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto shadow-xl rounded-xl'):
         ui.label('Neuer Gedanke').classes('text-2xl font-bold mb-3 text-slate-200')
         thought_input = ui.textarea(
@@ -145,21 +140,19 @@ async def index():
         ui.button('Suchen', on_click=perform_search) \
             .props('unelevated color=blue-7').classes('mt-4 w-full md:w-auto')
 
-    # =====================================
-    # Reflexion & Export – zentral & prominent
-    # =====================================
+    # Schnellzugriff-Card
     with ui.card().classes('w-full max-w-4xl mx-auto mt-10 shadow-2xl rounded-xl bg-slate-800/50 border border-slate-700'):
         ui.label('Schnellzugriff').classes('text-xl font-semibold text-center text-slate-300 mb-6')
         with ui.row().classes('justify-center gap-8 flex-wrap'):
             ui.button(
+                'Wöchentliche Reflexion jetzt',
                 icon='auto_awesome',
-                label='Wöchentliche Reflexion jetzt',
                 on_click=generate_weekly_reflection
             ).props('unelevated color=indigo-8 size=lg').classes('min-w-64')
 
             ui.button(
+                'Alles exportieren (ZIP)',
                 icon='download',
-                label='Alles exportieren (ZIP)',
                 on_click=export_all
             ).props('unelevated color=amber-8 size=lg').classes('min-w-64')
 
@@ -181,8 +174,8 @@ async def index():
             with ui.row().classes('gap-4 mt-6 justify-end'):
                 ui.button('Keine Verknüpfung', on_click=lambda: setattr(linking_dialog, 'value', False)) \
                     .props('unelevated color=grey-8')
-                merge_button = ui.button('Alle mergen', color='teal-9').props('unelevated') \
-                    .classes('text-white')
+                merge_button = ui.button('Alle mergen', on_click=lambda: setattr(linking_dialog, 'value', False)) \
+                    .props('unelevated color=teal-9')
 
 
 async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
@@ -321,7 +314,6 @@ async def export_all():
         ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
 
 
-# Start mit klarem Browser-Tab-Titel
 ui.run(
     title='Echo – dein lokaler Second Brain',
     port=9876,
