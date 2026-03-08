@@ -7,6 +7,7 @@ from pathlib import Path
 import zipfile
 import io
 import shutil
+import os
 
 from database import NoteDB
 from llm import generate_summary
