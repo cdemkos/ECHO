@@ -1,11 +1,12 @@
-nicegui>=2.14.0
-chromadb>=0.5.11
-sentence-transformers>=3.3.0
-ollama>=0.4.7
-pydantic>=2.10.0
-python-dateutil>=2.9.0
-einops>=0.8.0
-pystray>=0.19.5
-pywebview>=5.4         # für das Overlay-Fenster
-keyboard>=0.13.5       # für globalen Hotkey (pynput Alternative: pynput>=1.7.6)
-pillow>=10.0.0         # für Tray-Icon-Bild (PIL)
+nicegui==2.14.0               # UI-Framework (aktuell stabil, unterstützt alle Features)
+chromadb==0.5.11               # Vektor-Datenbank für Embeddings
+sentence-transformers==3.3.1   # Embedding-Modell (nomic-embed-text-v1.5)
+ollama==0.4.7                  # Python-Client für Ollama (LLM-Zusammenfassungen)
+pydantic==2.10.6               # Datenvalidierung (wird von vielen Libs benötigt)
+python-dateutil==2.9.0         # Datumshandling (für Timestamps & timedelta)
+
+# Optional, aber empfohlen für Tray-Icon / Overlay (später)
+pillow>=10.0.0                 # Bildverarbeitung (für Tray-Icons)
+pystray>=0.19.5                # System-Tray-Icon (zukünftig)
+pywebview>=5.4                 # WebView-Fenster (zukünftig)
+pynput>=1.7.6                  # Globale Hotkeys (zukünftig)
