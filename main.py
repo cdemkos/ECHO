@@ -1,4 +1,4 @@
-# main.py – ECHO Kern + Reflexion + Export + Auto-Linking (Buttons & Layout optimiert)
+# main.py – ECHO Kern + Reflexion + Export + Auto-Linking (erste Variante – Buttons harmonisiert)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -36,14 +36,12 @@ merge_button = None
 async def index():
     global reflection_dialog, reflection_content, linking_dialog, linking_content, merge_button
 
-    # Header – groß, mittig, mit Glow
+    # Header
     with ui.column().classes('items-center w-full mb-12'):
-        ui.label('ECHO').classes('text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl animate-pulse-slow')
+        ui.label('ECHO').classes('text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl')
         ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-2xl text-slate-300 mt-3 font-light italic')
 
-    # =====================================
     # Eingabe-Bereich
-    # =====================================
     with ui.card().classes('w-full max-w-4xl mx-auto shadow-2xl rounded-3xl bg-gradient-to-br from-slate-950 to-slate-900 border border-slate-700/50'):
         ui.label('Neuer Gedanke').classes('text-3xl font-bold mb-5 text-white text-center')
         thought_input = ui.textarea(
@@ -96,7 +94,7 @@ async def index():
         thought_input.on('focus', reset_auto_save_timer)
 
         ui.button('Manuell speichern', on_click=lambda: save_thought(auto=False)) \
-            .props('unelevated color=green-600 rounded-full').classes('mt-6 w-full md:w-1/3 mx-auto text-lg hover:scale-105 transition-transform')
+            .props('unelevated color=green-600 rounded-xl').classes('mt-6 w-full md:w-1/3 mx-auto text-lg hover:scale-105 transition-transform')
 
     # Suche-Bereich
     with ui.card().classes('w-full max-w-4xl mx-auto mt-10 shadow-2xl rounded-3xl bg-gradient-to-br from-slate-950 to-slate-900 border border-slate-700/50'):
@@ -142,25 +140,25 @@ async def index():
                 ui.notify(f'Suchfehler: {str(e)}', type='negative')
 
         ui.button('Suchen', on_click=perform_search) \
-            .props('unelevated color=blue-600 rounded-full').classes('mt-6 w-full md:w-1/3 mx-auto text-lg hover:scale-105 transition-transform')
+            .props('unelevated color=blue-600 rounded-xl').classes('mt-6 w-full md:w-1/3 mx-auto text-lg hover:scale-105 transition-transform')
 
     # =====================================
-    # Schnellzugriff – modern & eye-candy
+    # Schnellzugriff – angepasst, rechteckiger, harmonischer zu oberen Buttons
     # =====================================
-    with ui.card().classes('w-full max-w-4xl mx-auto mt-12 shadow-2xl rounded-3xl bg-gradient-to-r from-indigo-950/80 to-slate-950/80 border border-indigo-700/40 backdrop-blur-sm'):
+    with ui.card().classes('w-full max-w-4xl mx-auto mt-12 shadow-2xl rounded-3xl bg-gradient-to-r from-indigo-950/70 to-slate-950/70 border border-indigo-700/30 backdrop-blur-sm'):
         ui.label('Schnellzugriff').classes('text-2xl font-bold text-center text-indigo-300 mb-8')
-        with ui.row().classes('justify-center gap-12 flex-wrap px-6'):
+        with ui.row().classes('justify-center gap-12 flex-wrap px-8'):
             ui.button(
                 'Wöchentliche Reflexion jetzt',
                 icon='auto_awesome',
                 on_click=generate_weekly_reflection
-            ).props('unelevated color=indigo-600 size=lg round').classes('min-w-80 text-lg font-medium hover:scale-105 hover:shadow-xl transition-all duration-300')
+            ).props('unelevated color=indigo-600 rounded-xl size=lg').classes('min-w-80 text-lg font-medium hover:scale-105 hover:shadow-2xl transition-all duration-300')
 
             ui.button(
                 'Alles exportieren (ZIP)',
                 icon='download',
                 on_click=export_all
-            ).props('unelevated color=amber-600 size=lg round').classes('min-w-80 text-lg font-medium hover:scale-105 hover:shadow-xl transition-all duration-300')
+            ).props('unelevated color=amber-600 rounded-xl size=lg').classes('min-w-80 text-lg font-medium hover:scale-105 hover:shadow-2xl transition-all duration-300')
 
     # Reflexions-Dialog
     reflection_dialog = ui.dialog(value=False).props('persistent')
