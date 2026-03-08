@@ -87,3 +87,10 @@ Echo startenBashpython main.py
    ollama pull qwen2.5:3b
    # oder: ollama pull phi4:mini
    # oder: ollama pull gemma2:2b
+
+
+### Häufige Probleme & Fixes
+
+- "ModuleNotFoundError: No module named 'nicegui'": venv aktivieren und `pip install -r requirements.txt` erneut ausführen.
+- "LLM-Fehler" oder leere Zusammenfassungen: Stelle sicher, dass `ollama serve` läuft und das Modell (z. B. qwen2.5:3b) gezogen wurde.
+- "einops not found": `pip install einops` (selten, aber bei nomic-embed-text-v1.5 möglich).
