@@ -1,4 +1,4 @@
-# main.py – Echo Kern + Reflexion + Export + Auto-Linking (komplett – März 2026)
+# main.py – Echo Kern + Reflexion + Export + Auto-Linking (korrigiert – März 2026)
 
 from nicegui import ui, app
 from datetime import datetime, timedelta
@@ -24,9 +24,15 @@ NOTES_DIR.mkdir(parents=True, exist_ok=True)
 
 db = NoteDB()
 
+# Globale Referenzen für Dialog-Inhalte (damit Funktionen sie erreichen können)
+reflection_content = None
+linking_content = None
+
 
 @ui.page('/')
 async def index():
+    global reflection_content, linking_content
+
     ui.label('Echo – dein lokaler Stream-of-Thought').classes('text-2xl font-bold mb-6 text-center')
 
     # =====================================
@@ -65,7 +71,7 @@ async def index():
                     close_button=True
                 )
 
-                # Auto-Linking direkt nach dem Speichern triggern
+                # Auto-Linking nach Speichern
                 await check_auto_linking(note_id, text, embedding)
 
                 thought_input.value = ''
@@ -151,6 +157,7 @@ async def index():
     with ui.dialog(value=False).props('persistent') as reflection_dialog:
         with ui.card().classes('w-full max-w-4xl'):
             ui.label('Wöchentliche Reflexion').classes('text-2xl font-bold mb-4')
+            global reflection_content
             reflection_content = ui.markdown().classes('prose prose-slate max-w-none dark:prose-invert')
             ui.button('Schließen', on_click=lambda: setattr(reflection_dialog, 'value', False)) \
                 .props('unelevated color=grey-8').classes('mt-6')
@@ -161,17 +168,18 @@ async def index():
     with ui.dialog(value=False).props('persistent') as linking_dialog:
         with ui.card().classes('w-full max-w-4xl'):
             ui.label('Mögliche Verknüpfungen gefunden').classes('text-2xl font-bold mb-4')
+            global linking_content
             linking_content = ui.markdown().classes('prose prose-slate max-w-none dark:prose-invert')
             with ui.row().classes('gap-4 mt-6'):
                 ui.button('Keine Verknüpfung', on_click=lambda: setattr(linking_dialog, 'value', False)) \
                     .props('unelevated color=grey-8')
-                merge_button = ui.button('Alle mergen', on_click=lambda: setattr(linking_dialog, 'value', False)) \
-                    .props('unelevated color=teal-9')
+                merge_button = ui.button('Alle mergen', color='teal-9').props('unelevated') \
+                    .classes('text-white')
 
+    # Hier können wir später merge_button.on('click', do_merge) setzen, aber für den Moment reicht der Dialog
 
 async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
     try:
-        # Suche nach ähnlichen Notizen (Top-5, Schwellenwert 0.75)
         query_results = db.collection.query(
             query_embeddings=[new_embedding],
             n_results=5,
@@ -180,49 +188,46 @@ async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: lis
 
         similar = []
         for i in range(len(query_results['ids'][0])):
-            sim = 1 - query_results['distances'][0][i]  # Cosine-Sim aus Distance
-            if sim > 0.75:  # sehr ähnlich (anpassbar)
+            sim = 1 - query_results['distances'][0][i]
+            if sim > 0.75 and query_results['ids'][0][i] != new_note_id:
                 id_ = query_results['ids'][0][i]
-                if id_ == new_note_id:
-                    continue  # sich selbst ignorieren
                 db.cursor.execute("SELECT timestamp, text, file_path FROM notes WHERE id = ?", (id_,))
                 row = db.cursor.fetchone()
                 if row:
                     similar.append({
                         'id': id_,
                         'timestamp': row[0],
-                        'text': row[1],
-                        'file_path': row[2],
+                        'text': row[1][:300] + '...',
                         'similarity': sim
                     })
 
         if not similar:
-            return  # nichts Ähnliches gefunden
+            return
 
-        # UI-Vorschlag
-        content = "**Sehr ähnliche Gedanken gefunden (Cosine > 0.75):**\n\n"
+        content = "**Sehr ähnliche Gedanken gefunden (Ähnlichkeit > 75 %):**\n\n"
         for entry in similar:
-            content += f"- **{entry['timestamp']}** (Ähnlichkeit: {entry['similarity']:.2f})\n"
-            content += f"  {entry['text'][:300]}...\n\n"
+            content += f"- **{entry['timestamp']}** ({entry['similarity']:.2%})\n  {entry['text']}\n\n"
 
         content += "Möchtest du diese Einträge mergen? (Alte werden archiviert)"
 
         linking_content.content = content
+        linking_dialog.value = True
 
+        # Merge-Logik (einfach: alle alten archivieren, neue mit Referenzen speichern)
         def do_merge():
-            # Merge-Logik
             merged_text = new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
             for entry in similar:
                 merged_text += f"[{entry['timestamp']}] {entry['text']}\n\n---\n\n"
-                # Alte Datei archivieren
-                if Path(entry['file_path']).exists():
-                    shutil.move(entry['file_path'], ARCHIVE_DIR / Path(entry['file_path']).name)
+                # Archivieren
+                old_path = Path(entry['file_path'])
+                if old_path.exists():
+                    shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
                 # Aus DB löschen
                 db.collection.delete(ids=[entry['id']])
                 db.cursor.execute("DELETE FROM notes WHERE id = ?", (entry['id'],))
                 db.conn.commit()
 
-            # Neue gemergte Notiz speichern
+            # Neue gemergte Notiz
             timestamp = datetime.now().isoformat()
             note_id = str(uuid.uuid4())[:12]
             filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_MERGED.md"
@@ -233,10 +238,8 @@ async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: lis
             db.add_note(note_id, timestamp, merged_text, str(filename), embedding)
 
             ui.notify('Einträge erfolgreich gemergt & archiviert', type='positive')
+            linking_dialog.value = False
 
-        linking_dialog.value = True
-
-        # Merge-Button dynamisch verbinden
         merge_button.on('click', do_merge)
 
     except Exception as e:
