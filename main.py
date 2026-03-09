@@ -1,4 +1,4 @@
-# main.py – ECHO Second Brain (stabilisiert – alle LLM-Aufrufe abgefangen)
+# main.py – ECHO Second Brain (komplett – ohne Graph-View)
 # Stand: März 2026
 
 from nicegui import ui, app
@@ -9,9 +9,8 @@ import zipfile
 import io
 import os
 import shutil
-import json
 
-# Für PDF-Export (weiß, schwarz, blauer Titel)
+# Für PDF-Export (weißes Layout, schwarzer Text, blauer Titel)
 from weasyprint import HTML
 
 # Lokale Module
@@ -46,7 +45,7 @@ async def index():
         ui.label('ECHO').classes('text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl')
         ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-2xl text-slate-300 mt-3 font-light italic')
 
-    # Automatische Funktionen beim Start – mit Fehlerbehandlung
+    # Automatische Funktionen beim Start
     await check_and_generate_auto_reflection()
     await generate_auto_daily_summary()
     await decay_and_archive()
@@ -79,7 +78,7 @@ async def index():
                 embedding = get_embedding(text)
                 db.add_note(note_id, timestamp, text, str(filename), embedding)
 
-                tags = await generate_tags(text)  # mit try/except in generate_tags
+                tags = await generate_tags(text)
                 db.collection.update(
                     ids=[note_id],
                     metadatas=[{"timestamp": timestamp, "file_path": str(filename), "tags": ",".join(tags)}]
@@ -144,11 +143,7 @@ async def index():
                     "Strukturiere mit Aufzählungspunkten wenn sinnvoll.\n\n"
                     f"Suchanfrage: {query}\n\n{context}"
                 )
-
-                try:
-                    summary = await generate_summary(summary_prompt)
-                except Exception as llm_err:
-                    summary = f"[Zusammenfassung konnte nicht generiert werden: {str(llm_err)}]"
+                summary = await generate_summary(summary_prompt)
 
                 html = f"**Zusammenfassung:**\n\n{summary}\n\n---\n\n**Gefundene Einträge:**\n\n"
 
@@ -181,12 +176,6 @@ async def index():
             ).props('unelevated color=indigo-600 rounded-xl size=lg').classes('min-w-80 text-lg font-medium hover:scale-105 hover:shadow-2xl transition-all duration-300 border border-indigo-500/30')
 
             ui.button(
-                'Graph-View öffnen',
-                icon='hub',
-                on_click=lambda: ui.navigate.to('/graph')
-            ).props('unelevated color=purple-600 rounded-xl size=lg').classes('min-w-80 text-lg font-medium hover:scale-105 hover:shadow-2xl transition-all duration-300 border border-purple-500/30')
-
-            ui.button(
                 'Alles exportieren (ZIP)',
                 icon='download',
                 on_click=export_all
@@ -203,133 +192,17 @@ async def index():
 
 
 # =====================================================================
-# Graph-View Seite (bereinigt – await-Problem entfernt)
-# =====================================================================
-
-@ui.page('/graph')
-async def graph_view():
-    ui.label('Graph-View: Gedankenverbindungen').classes('text-4xl font-bold mb-8 text-center text-indigo-300')
-
-    # Filter-Controls
-    with ui.row().classes('justify-center gap-6 mb-8 flex-wrap'):
-        limit_input = ui.number(label='Max. Notizen laden', value=150, min=50, max=800).classes('w-48')
-        threshold_input = ui.number(label='Mindest-Ähnlichkeit', value=0.70, min=0.50, max=0.95, step=0.05).classes('w-48')
-        refresh_btn = ui.button('Graph neu laden', icon='refresh', color='indigo').props('unelevated flat size=lg')
-
-    status = ui.label('Lade Graph...').classes('text-center text-lg mb-4 opacity-80')
-    graph_container = ui.html('').classes('w-full h-[75vh] border border-slate-700 rounded-xl overflow-hidden bg-slate-900')
-
-    async def build_and_render_graph():
-        try:
-            status.text = 'Lade Notizen und berechne Verbindungen...'
-
-            limit = int(limit_input.value)
-            min_sim = float(threshold_input.value)
-
-            db.cursor.execute("SELECT id, timestamp, text FROM notes ORDER BY timestamp DESC LIMIT ?", (limit,))
-            notes = db.cursor.fetchall()
-
-            if not notes:
-                status.text = 'Keine Notizen vorhanden.'
-                return
-
-            nodes = []
-            edges = set()
-
-            for note_id, ts, text in notes:
-                short_label = (text.split('\n')[0][:40] or ts[:19]).replace('"', "'")
-                nodes.append({
-                    "id": note_id,
-                    "label": short_label,
-                    "title": f"{ts}\n{text[:300]}...",
-                    "value": 8 + len(text) // 300,
-                    "group": ts[:10]
-                })
-
-                embedding = get_embedding(text)
-                results = db.collection.query(
-                    query_embeddings=[embedding],
-                    n_results=10,
-                    include=['metadatas', 'distances']
-                )
-
-                for j in range(len(results['ids'][0])):
-                    other_id = results['ids'][0][j]
-                    if other_id == note_id:
-                        continue
-                    sim = 1 - results['distances'][0][j]
-                    if sim >= min_sim:
-                        edge_key = tuple(sorted([note_id, other_id]))
-                        edges.add((edge_key, sim))
-
-            edge_list = [
-                {"from": fr, "to": to, "value": sim * 4, "title": f"{sim:.1%} Ähnlichkeit"}
-                for (fr, to), sim in edges
-            ]
-
-            graph_data = {"nodes": nodes, "edges": edge_list}
-
-            status.text = f'Graph geladen: {len(nodes)} Knoten, {len(edge_list)} Verbindungen'
-
-            vis_script = f"""
-            <div id="mynetwork" style="width:100%; height:100%;"></div>
-            <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-            <script>
-                var container = document.getElementById('mynetwork');
-                var data = {json.dumps(graph_data)};
-                var options = {{
-                    nodes: {{
-                        shape: 'dot',
-                        font: {{ size: 14, color: '#e2e8f0' }},
-                        scaling: {{ min: 10, max: 40 }},
-                        borderWidth: 2,
-                        borderWidthSelected: 4
-                    }},
-                    edges: {{
-                        arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
-                        smooth: {{ type: 'continuous' }},
-                        color: {{ color: '#64748b', highlight: '#a5b4fc' }}
-                    }},
-                    physics: {{
-                        enabled: true,
-                        barnesHut: {{ gravitationalConstant: -6000, springLength: 120 }}
-                    }},
-                    interaction: {{
-                        hover: true,
-                        navigationButtons: true,
-                        keyboard: true,
-                        zoomView: true,
-                        dragView: true
-                    }},
-                    groups: {{ useDefaultGroups: true }}
-                }};
-                new vis.Network(container, data, options);
-            </script>
-            """
-
-            graph_container.content = vis_script
-
-        except Exception as e:
-            status.text = f'Fehler beim Erstellen des Graphs: {str(e)}'
-            status.classes('text-red-400')
-
-    await build_and_render_graph()
-
-    async def on_refresh():
-        graph_container.content = ''
-        status.text = 'Graph wird neu geladen...'
-        await build_and_render_graph()
-
-    refresh_btn.on('click', on_refresh)
-
-
-# =====================================================================
-# Hilfsfunktionen mit Fehlerbehandlung
+# Hilfsfunktionen
 # =====================================================================
 
 async def generate_tags(text: str):
     try:
-        prompt = f"Analysiere den Text und schlage 2–4 Tags vor (kommagetrennt, keine Erklärung):\n\n{text[:1000]}\n\nBeispiele: Produktivität,Reise,Emotionen"
+        prompt = (
+            f"Analysiere den folgenden Text und schlage 2–4 passende Tags / Kategorien vor. "
+            f"Gib nur die Tags als kommagetrennte Liste zurück, ohne Einleitung oder Erklärung.\n\n"
+            f"Text: {text[:1000]}\n\n"
+            f"Beispiele: Produktivität,Reise,Emotionen,Todo,Beziehung,Finanzen,Gesundheit"
+        )
         tags_str = await generate_summary(prompt)
         tags = [t.strip() for t in tags_str.split(',') if t.strip()]
         return tags[:4]
@@ -341,39 +214,48 @@ async def generate_tags(text: str):
 async def check_and_generate_auto_reflection():
     try:
         since = (datetime.now() - timedelta(days=7)).isoformat()
-        db.cursor.execute("SELECT id FROM notes WHERE timestamp >= ? AND text LIKE '%Wöchentliche Reflexion%' LIMIT 1", (since,))
+        db.cursor.execute(
+            "SELECT id FROM notes WHERE timestamp >= ? AND text LIKE '%Wöchentliche Reflexion%' LIMIT 1",
+            (since,)
+        )
         if db.cursor.fetchone():
             return
 
-        context_entries = db.cursor.execute("SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp", (since,)).fetchall()
+        context_entries = db.cursor.execute(
+            "SELECT timestamp, text FROM notes WHERE timestamp >= ? ORDER BY timestamp",
+            (since,)
+        ).fetchall()
+
         if not context_entries:
             return
 
         context = "\n\n".join([f"[{ts}] {text[:600]}..." for ts, text in context_entries])
         prompt = (
-            "Du bist ein reflektierender Coach. Analysiere die Gedanken der letzten Woche:\n\n"
+            "Du bist ein ehrlicher, reflektierender Coach. "
+            "Analysiere die folgenden Gedanken des Nutzers der letzten Woche:\n\n"
             f"{context}\n\n"
-            "- Wiederkehrende Themen?\n"
-            "- Emotionale Tonalität?\n"
-            "- Muster / Loops?\n"
-            "- Was wurde ignoriert / bereut?\n"
-            "- Nächste Woche besser machen?\n\n"
-            "Strukturiert mit Überschriften und Punkten. Direkt, wohlwollend."
+            "- Welche Themen tauchen wiederholt auf?\n"
+            "- Welche emotionale Tonalität dominiert (Frust, Neugier, Stolz, Angst, …)?\n"
+            "- Welche Muster, Gewohnheiten oder offene Loops siehst du?\n"
+            "- Was wurde verschoben, ignoriert oder bereut?\n"
+            "- Was könnte der Nutzer nächste Woche anders / besser machen?\n\n"
+            "Strukturiere die Antwort klar mit Überschriften und Aufzählungspunkten. "
+            "Sei direkt, aber wohlwollend – keine Schönfärberei."
         )
 
         reflection_text = await generate_summary(prompt)
 
         timestamp = datetime.now().isoformat()
         note_id = str(uuid.uuid4())[:12]
-        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_AUTO_REFLEXION.md"
+        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_REFLEXION.md"
 
         with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"# Automatische Reflexion – {timestamp}\n\n{reflection_text}")
+            f.write(f"# Wöchentliche Reflexion – {timestamp}\n\n{reflection_text}")
 
         embedding = get_embedding(reflection_text)
         db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
 
-        ui.notify('Automatische Reflexion erstellt.', type='positive', timeout=6)
+        ui.notify('Automatische wöchentliche Reflexion wurde erstellt und gespeichert.', type='positive', timeout=8)
 
     except Exception as e:
         print(f"Auto-Reflexion fehlgeschlagen: {e}")
@@ -395,13 +277,14 @@ async def generate_auto_daily_summary():
 
         context = "\n\n".join([f"[{ts}] {text[:400]}..." for ts, text in entries])
         prompt = (
-            "Kurze Tageszusammenfassung basierend auf den letzten 24h:\n\n"
+            "Erstelle eine kurze Tageszusammenfassung für den Nutzer basierend auf den Gedanken der letzten 24 Stunden:\n\n"
             f"{context}\n\n"
-            "- Hauptthemen?\n"
-            "- Emotionale Tonalität?\n"
-            "- Offene Punkte / nächste Schritte?\n"
-            "- Kurzer motivierender Satz.\n\n"
-            "Knapp, strukturiert, direkt."
+            "- Welche Hauptthemen standen im Vordergrund?\n"
+            "- Wie war die emotionale Tonalität (Frust, Energie, Ruhe, Druck, …)?\n"
+            "- Welche offenen Punkte oder nächsten Schritte kristallisieren sich heraus?\n"
+            "- Ein kurzer, motivierender oder warnender Satz für den Rest des Tages.\n\n"
+            "Halte es knapp (max. 150–200 Wörter), strukturiert und direkt. "
+            f"Titel: Tageszusammenfassung – {today}"
         )
 
         summary_text = await generate_summary(prompt)
@@ -416,10 +299,112 @@ async def generate_auto_daily_summary():
         embedding = get_embedding(summary_text)
         db.add_note(note_id, timestamp, summary_text, str(filename), embedding)
 
-        ui.notify('Tageszusammenfassung automatisch erstellt.', type='positive', timeout=6)
+        ui.notify('Deine Tageszusammenfassung wurde automatisch erstellt und gespeichert.', type='positive', timeout=8)
 
     except Exception as e:
-        print(f"Auto-Tageszusammenfassung fehlgeschlagen: {e}")
+        print(f"Auto-Zusammenfassung fehlgeschlagen: {e}")
+
+
+async def decay_and_archive():
+    try:
+        archive_after_days = 90
+        reference_window_days = 30
+
+        cutoff = (datetime.now() - timedelta(days=archive_after_days)).isoformat()
+        reference_cutoff = (datetime.now() - timedelta(days=reference_window_days)).isoformat()
+
+        db.cursor.execute("""
+            SELECT id, timestamp, file_path 
+            FROM notes 
+            WHERE timestamp < ? 
+            AND (SELECT COUNT(*) FROM notes 
+                 WHERE text LIKE '%' || notes.id || '%' 
+                 AND timestamp > ?) = 0
+        """, (cutoff, reference_cutoff))
+
+        old_notes = db.cursor.fetchall()
+
+        archived = 0
+        for note_id, ts, file_path in old_notes:
+            old_path = Path(file_path)
+            if old_path.exists():
+                shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
+            db.collection.delete(ids=[note_id])
+            db.cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            archived += 1
+
+        db.conn.commit()
+
+        if archived > 0:
+            ui.notify(f'{archived} alte Notizen wurden archiviert.', type='info', timeout=6)
+
+    except Exception as e:
+        print(f"Decay fehlgeschlagen: {e}")
+
+
+async def check_auto_linking(new_note_id: str, new_text: str, new_embedding: list):
+    try:
+        query_results = db.collection.query(
+            query_embeddings=[new_embedding],
+            n_results=5,
+            include=['metadatas', 'documents', 'distances']
+        )
+
+        similar = []
+        for i in range(len(query_results['ids'][0])):
+            sim = 1 - query_results['distances'][0][i]
+            if sim > 0.75 and query_results['ids'][0][i] != new_note_id:
+                id_ = query_results['ids'][0][i]
+                db.cursor.execute("SELECT timestamp, text, file_path FROM notes WHERE id = ?", (id_,))
+                row = db.cursor.fetchone()
+                if row:
+                    similar.append({
+                        'id': id_,
+                        'timestamp': row[0],
+                        'text': row[1][:300] + '...',
+                        'similarity': sim,
+                        'file_path': row[2]
+                    })
+
+        if not similar:
+            return
+
+        content = "**Sehr ähnliche Gedanken gefunden (Ähnlichkeit > 75 %):**\n\n"
+        for entry in similar:
+            content += f"- **{entry['timestamp']}** ({entry['similarity']:.2%})\n  {entry['text']}\n\n"
+
+        content += "Möchtest du diese Einträge mergen? (Alte werden archiviert)"
+
+        linking_content.content = content
+        linking_dialog.value = True
+
+        async def do_merge():
+            merged_text = new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
+            for entry in similar:
+                merged_text += f"[{entry['timestamp']}] {entry['text']}\n\n---\n\n"
+                old_path = Path(entry['file_path'])
+                if old_path.exists():
+                    shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
+                db.collection.delete(ids=[entry['id']])
+                db.cursor.execute("DELETE FROM notes WHERE id = ?", (entry['id'],))
+                db.conn.commit()
+
+            timestamp = datetime.now().isoformat()
+            note_id = str(uuid.uuid4())[:12]
+            filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_MERGED.md"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"# Gemergter Gedanke – {timestamp}\n\n{merged_text}")
+
+            embedding = get_embedding(merged_text)
+            db.add_note(note_id, timestamp, merged_text, str(filename), embedding)
+
+            ui.notify('Einträge erfolgreich gemergt & archiviert', type='positive')
+            linking_dialog.value = False
+
+        merge_button.on('click', do_merge)
+
+    except Exception as e:
+        ui.notify(f'Auto-Linking fehlgeschlagen: {str(e)}', type='negative')
 
 
 async def generate_weekly_reflection():
@@ -435,21 +420,18 @@ async def generate_weekly_reflection():
         context = "\n\n".join([f"[{ts}] {text[:600]}..." for ts, text in entries])
         prompt = (
             "Du bist ein ehrlicher, reflektierender Coach. "
-            "Analysiere die Gedanken der letzten Woche:\n\n"
+            "Analysiere die folgenden Gedanken des Nutzers der letzten Woche:\n\n"
             f"{context}\n\n"
-            "- Wiederkehrende Themen?\n"
-            "- Emotionale Tonalität?\n"
-            "- Muster / Loops?\n"
-            "- Verschoben / ignoriert / bereut?\n"
-            "- Nächste Woche besser machen?\n\n"
-            "Klar strukturiert, direkt, wohlwollend."
+            "- Welche Themen tauchen wiederholt auf?\n"
+            "- Welche emotionale Tonalität dominiert (Frust, Neugier, Stolz, Angst, …)?\n"
+            "- Welche Muster, Gewohnheiten oder offene Loops siehst du?\n"
+            "- Was wurde verschoben, ignoriert oder bereut?\n"
+            "- Was könnte der Nutzer nächste Woche anders / besser machen?\n\n"
+            "Strukturiere die Antwort klar mit Überschriften und Aufzählungspunkten. "
+            "Sei direkt, aber wohlwollend – keine Schönfärberei."
         )
 
-        try:
-            reflection_text = await generate_summary(prompt)
-        except Exception as llm_err:
-            reflection_text = f"[LLM-Fehler: {str(llm_err)}]\n\nBitte prüfe Ollama (Server läuft? Modell gezogen?)."
-            print(f"LLM-Fehler in Reflexion: {llm_err}")
+        reflection_text = await generate_summary(prompt)
 
         timestamp = datetime.now().isoformat()
         note_id = str(uuid.uuid4())[:12]
@@ -461,7 +443,7 @@ async def generate_weekly_reflection():
         embedding = get_embedding(reflection_text)
         db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
 
-        # PDF (weiß, schwarz, blauer Titel)
+        # PDF-Generierung – weißes Layout, schwarzer Text, blauer Titel
         html_safe_text = reflection_text.replace('\n', '<br>')
 
         html_content = f"""
@@ -472,21 +454,56 @@ async def generate_weekly_reflection():
             <title>Wöchentliche Reflexion – {timestamp[:10]}</title>
             <style>
                 @page {{ size: A4; margin: 2.5cm 2cm; }}
-                body {{ font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.6; color: #000000; background: #ffffff; margin: 0; padding: 0; }}
-                .container {{ max-width: 800px; margin: 0 auto; padding: 1cm; }}
-                h1 {{ color: #6366f1; text-align: center; font-size: 2.2em; margin-bottom: 0.4em; }}
-                .date {{ text-align: center; color: #4b5563; font-size: 1.1em; margin-bottom: 2em; }}
-                .content {{ font-size: 1.05em; color: #000000; }}
-                h2, h3 {{ color: #4b5563; margin-top: 1.5em; }}
-                ul, ol {{ margin-left: 1.5em; }}
-                hr {{ border: none; border-top: 1px solid #d1d5db; margin: 2em 0; }}
+                body {{
+                    font-family: 'Helvetica', 'Arial', sans-serif;
+                    line-height: 1.6;
+                    color: #000000;
+                    background: #ffffff;
+                    margin: 0;
+                    padding: 0;
+                }}
+                .container {{
+                    max-width: 800px;
+                    margin: 0 auto;
+                    padding: 1cm;
+                }}
+                h1 {{
+                    color: #6366f1;
+                    text-align: center;
+                    font-size: 2.2em;
+                    margin-bottom: 0.4em;
+                }}
+                .date {{
+                    text-align: center;
+                    color: #4b5563;
+                    font-size: 1.1em;
+                    margin-bottom: 2em;
+                }}
+                .content {{
+                    font-size: 1.05em;
+                    color: #000000;
+                }}
+                h2, h3 {{
+                    color: #4b5563;
+                    margin-top: 1.5em;
+                }}
+                ul, ol {{
+                    margin-left: 1.5em;
+                }}
+                hr {{
+                    border: none;
+                    border-top: 1px solid #d1d5db;
+                    margin: 2em 0;
+                }}
             </style>
         </head>
         <body>
             <div class="container">
                 <h1>Wöchentliche Reflexion</h1>
                 <div class="date">{timestamp[:19].replace('T', ' ')}</div>
-                <div class="content">{html_safe_text}</div>
+                <div class="content">
+                    {html_safe_text}
+                </div>
             </div>
         </body>
         </html>
@@ -494,6 +511,7 @@ async def generate_weekly_reflection():
 
         pdf_bytes = HTML(string=html_content).write_pdf()
 
+        # Dialog aktualisieren
         reflection_content.clear()
         reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
 
@@ -505,13 +523,102 @@ async def generate_weekly_reflection():
 
         reflection_dialog.value = True
 
-        ui.notify('Reflexion generiert & PDF bereit', type='positive')
+        ui.notify('Reflexion generiert, gespeichert & PDF bereit', type='positive')
 
     except Exception as e:
         ui.notify(f'Reflexion fehlgeschlagen: {str(e)}', type='negative')
 
 
-# ... (decay_and_archive, check_auto_linking, export_all, edit_note, save_edit, delete_note, confirm_delete bleiben unverändert – wie in vorheriger Version)
+async def export_all():
+    try:
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for md_file in NOTES_DIR.glob('*.md'):
+                zip_file.write(md_file, arcname=f"notes/{md_file.name}")
+
+            if Path('data/echo.db').exists():
+                zip_file.write('data/echo.db', arcname='data/echo.db')
+
+            if CHROMA_DIR.exists():
+                for root, _, files in os.walk(CHROMA_DIR):
+                    for file in files:
+                        file_path = Path(root) / file
+                        arc_path = file_path.relative_to(DATA_DIR)
+                        zip_file.write(file_path, arcname=str(arc_path))
+
+        zip_buffer.seek(0)
+        filename = f"echo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        ui.download(zip_buffer.read(), filename=filename)
+        ui.notify('Export abgeschlossen – ZIP wird heruntergeladen', type='positive')
+
+    except Exception as e:
+        ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
+
+
+# Edit & Delete Funktionen
+async def edit_note(hit):
+    with ui.dialog(value=True).props('persistent') as edit_dialog:
+        with ui.card().classes('w-full max-w-4xl'):
+            ui.label(f'Bearbeite Eintrag vom {hit["timestamp"]}').classes('text-2xl font-bold mb-4')
+            edit_input = ui.textarea(value=hit['text']).props('autogrow outlined').classes('w-full min-h-64')
+            ui.button('Speichern', on_click=lambda: save_edit(hit, edit_input.value, edit_dialog)) \
+                .props('unelevated color=green-8').classes('mt-6')
+            ui.button('Abbrechen', on_click=edit_dialog.hide).props('unelevated color=grey-8').classes('mt-2')
+
+
+async def save_edit(hit, new_text, dialog):
+    try:
+        old_path = Path(hit['file_path'])
+        if old_path.exists():
+            shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
+
+        timestamp = datetime.now().isoformat()
+        note_id = str(uuid.uuid4())[:12]
+        filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_EDIT.md"
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(f"# Bearbeitete Version – {timestamp} (Original: {hit['timestamp']})\n\n{new_text}")
+
+        embedding = get_embedding(new_text)
+        db.add_note(note_id, timestamp, new_text, str(filename), embedding)
+
+        db.collection.delete(ids=[hit['id']])
+        db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
+        db.conn.commit()
+
+        ui.notify('Eintrag erfolgreich bearbeitet & alte Version archiviert', type='positive')
+        dialog.hide()
+
+    except Exception as e:
+        ui.notify(f'Bearbeitung fehlgeschlagen: {str(e)}', type='negative')
+
+
+async def delete_note(hit):
+    with ui.dialog(value=True).props('persistent') as delete_dialog:
+        with ui.card().classes('w-full max-w-md'):
+            ui.label('Eintrag wirklich löschen?').classes('text-2xl font-bold mb-4 text-red-400')
+            ui.label('Diese Aktion kann nicht rückgängig gemacht werden.').classes('mb-6')
+            with ui.row().classes('justify-end gap-4'):
+                ui.button('Abbrechen', on_click=delete_dialog.hide).props('unelevated color=grey-8')
+                ui.button('Löschen', on_click=lambda: confirm_delete(hit, delete_dialog)).props('unelevated color=red-8')
+
+
+async def confirm_delete(hit, dialog):
+    try:
+        old_path = Path(hit['file_path'])
+        if old_path.exists():
+            os.remove(old_path)
+
+        db.collection.delete(ids=[hit['id']])
+        db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
+        db.conn.commit()
+
+        ui.notify('Eintrag erfolgreich gelöscht', type='negative')
+        dialog.hide()
+
+    except Exception as e:
+        ui.notify(f'Löschen fehlgeschlagen: {str(e)}', type='negative')
+
 
 ui.run(
     title='ECHO – dein lokaler Second Brain',
