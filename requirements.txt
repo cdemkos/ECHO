@@ -10,3 +10,4 @@ pillow>=10.0.0                 # Bildverarbeitung (für Tray-Icons)
 pystray>=0.19.5                # System-Tray-Icon (zukünftig)
 pywebview>=5.4                 # WebView-Fenster (zukünftig)
 pynput>=1.7.6                  # Globale Hotkeys (zukünftig)
+weasyprint==62.3
