@@ -1,4 +1,4 @@
-# main.py – ECHO Second Brain (komplett mit PDF-Export der Reflexion)
+# main.py – ECHO Second Brain (komplett mit PDF-Export & korrigiertem Dialog)
 # Stand: März 2026
 
 from nicegui import ui, app
@@ -448,7 +448,7 @@ async def generate_weekly_reflection():
         # =====================================
         # PDF-Generierung
         # =====================================
-        # Backslashes vorher ersetzen, damit f-String keinen SyntaxError wirft
+        # Backslashes vorher ersetzen (verhindert SyntaxError in f-String)
         html_safe_text = reflection_text.replace('\n', '<br>')
 
         html_content = f"""
@@ -519,7 +519,7 @@ async def generate_weekly_reflection():
         # Dialog mit Markdown + PDF-Download
         # =====================================
         reflection_content.clear()
-        reflection_content.append(ui.markdown(f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"))
+        reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
 
         ui.button(
             'Als PDF herunterladen',
