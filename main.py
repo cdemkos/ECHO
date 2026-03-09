@@ -1,4 +1,4 @@
-# main.py – ECHO Second Brain (komplett – alle Features integriert)
+# main.py – ECHO Second Brain (komplett mit PDF-Export der Reflexion)
 # Stand: März 2026
 
 from nicegui import ui, app
@@ -9,6 +9,9 @@ import zipfile
 import io
 import os
 import shutil
+
+# Für PDF-Export
+from weasyprint import HTML
 
 # Lokale Module
 from database import NoteDB
@@ -181,7 +184,7 @@ async def index():
                 on_click=export_all
             ).props('unelevated color=amber-600 rounded-xl size=lg').classes('min-w-80 text-lg font-medium hover:scale-105 hover:shadow-2xl transition-all duration-300 border border-amber-500/30')
 
-    # Reflexions-Dialog
+    # Reflexions-Dialog (mit PDF-Download)
     reflection_dialog = ui.dialog(value=False).props('persistent')
     with reflection_dialog:
         with ui.card().classes('w-full max-w-4xl'):
@@ -189,18 +192,6 @@ async def index():
             reflection_content = ui.markdown().classes('prose prose-slate max-w-none dark:prose-invert')
             ui.button('Schließen', on_click=lambda: setattr(reflection_dialog, 'value', False)) \
                 .props('unelevated color=grey-8 rounded-xl').classes('mt-8 w-full md:w-auto text-lg')
-
-    # Auto-Linking Dialog
-    linking_dialog = ui.dialog(value=False).props('persistent')
-    with linking_dialog:
-        with ui.card().classes('w-full max-w-4xl'):
-            ui.label('Mögliche Verknüpfungen gefunden').classes('text-3xl font-bold mb-6 text-teal-300')
-            linking_content = ui.markdown().classes('prose prose-slate max-w-none dark:prose-invert')
-            with ui.row().classes('gap-6 mt-8 justify-end'):
-                ui.button('Keine Verknüpfung', on_click=lambda: setattr(linking_dialog, 'value', False)) \
-                    .props('unelevated color=grey-8 rounded-xl').classes('text-lg')
-                merge_button = ui.button('Alle mergen', on_click=lambda: setattr(linking_dialog, 'value', False)) \
-                    .props('unelevated color=teal-9 rounded-xl').classes('text-lg text-white')
 
 
 # =====================================================================
@@ -454,10 +445,88 @@ async def generate_weekly_reflection():
         embedding = get_embedding(reflection_text)
         db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
 
-        reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
+        # =====================================
+        # PDF-Generierung
+        # =====================================
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Wöchentliche Reflexion – {timestamp[:10]}</title>
+            <style>
+                @page {{ size: A4; margin: 2.5cm 2cm; }}
+                body {{
+                    font-family: 'Helvetica', 'Arial', sans-serif;
+                    line-height: 1.6;
+                    color: #e2e8f0;
+                    background: #0f172a;
+                    margin: 0;
+                    padding: 0;
+                }}
+                .container {{
+                    max-width: 800px;
+                    margin: 0 auto;
+                    padding: 1cm;
+                }}
+                h1 {{
+                    color: #6366f1;
+                    text-align: center;
+                    font-size: 2.2em;
+                    margin-bottom: 0.4em;
+                }}
+                .date {{
+                    text-align: center;
+                    color: #94a3b8;
+                    font-size: 1.1em;
+                    margin-bottom: 2em;
+                }}
+                .content {{
+                    font-size: 1.05em;
+                }}
+                h2, h3 {{
+                    color: #a5b4fc;
+                    margin-top: 1.5em;
+                }}
+                ul, ol {{
+                    margin-left: 1.5em;
+                }}
+                hr {{
+                    border: none;
+                    border-top: 1px solid #334155;
+                    margin: 2em 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Wöchentliche Reflexion</h1>
+                <div class="date">{timestamp[:19].replace('T', ' ')}</div>
+                <div class="content">
+                    {reflection_text.replace('\n', '<br>')}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        pdf_bytes = HTML(string=html_content).write_pdf()
+
+        # =====================================
+        # Dialog mit Markdown + PDF-Download
+        # =====================================
+        reflection_content.clear()
+        reflection_content.append(ui.markdown(f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"))
+        
+        ui.button(
+            'Als PDF herunterladen',
+            icon='picture_as_pdf',
+            on_click=lambda: ui.download(pdf_bytes, filename=f"reflexion_{timestamp[:10]}.pdf")
+        ).props('unelevated color=indigo-7 size=lg').classes('mt-6 w-full md:w-auto')
+
         reflection_dialog.value = True
 
-        ui.notify('Reflexion generiert & gespeichert', type='positive')
+        ui.notify('Reflexion generiert, gespeichert & PDF bereit zum Download', type='positive')
 
     except Exception as e:
         ui.notify(f'Reflexion fehlgeschlagen: {str(e)}', type='negative')
@@ -490,7 +559,7 @@ async def export_all():
 
 
 # =====================================================================
-# Edit & Delete Funktionen
+# Edit & Delete Funktionen (falls noch nicht vorhanden – aus vorheriger Version)
 # =====================================================================
 
 async def edit_note(hit):
@@ -505,12 +574,10 @@ async def edit_note(hit):
 
 async def save_edit(hit, new_text, dialog):
     try:
-        # Alte Notiz archivieren
         old_path = Path(hit['file_path'])
         if old_path.exists():
             shutil.move(str(old_path), ARCHIVE_DIR / old_path.name)
 
-        # Neue Version speichern
         timestamp = datetime.now().isoformat()
         note_id = str(uuid.uuid4())[:12]
         filename = NOTES_DIR / f"{timestamp.replace(':', '-')}_{note_id}_EDIT.md"
@@ -521,7 +588,6 @@ async def save_edit(hit, new_text, dialog):
         embedding = get_embedding(new_text)
         db.add_note(note_id, timestamp, new_text, str(filename), embedding)
 
-        # Alte aus DB und Chroma löschen
         db.collection.delete(ids=[hit['id']])
         db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
         db.conn.commit()
@@ -545,12 +611,10 @@ async def delete_note(hit):
 
 async def confirm_delete(hit, dialog):
     try:
-        # Datei löschen
         old_path = Path(hit['file_path'])
         if old_path.exists():
             os.remove(old_path)
 
-        # Aus DB und Chroma löschen
         db.collection.delete(ids=[hit['id']])
         db.cursor.execute("DELETE FROM notes WHERE id = ?", (hit['id'],))
         db.conn.commit()
