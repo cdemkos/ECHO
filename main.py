@@ -1,4 +1,4 @@
-# main.py – ECHO Second Brain (komplett mit PDF-Export & korrigiertem Dialog)
+# main.py – ECHO Second Brain (komplett mit druckfreundlichem PDF-Export)
 # Stand: März 2026
 
 from nicegui import ui, app
@@ -10,7 +10,7 @@ import io
 import os
 import shutil
 
-# Für PDF-Export
+# Für PDF-Export (druckfreundlich: weißer Hintergrund, schwarzer Text)
 from weasyprint import HTML
 
 # Lokale Module
@@ -446,9 +446,8 @@ async def generate_weekly_reflection():
         db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
 
         # =====================================
-        # PDF-Generierung
+        # PDF-Generierung – weißes Layout, schwarzer Text, blauer Titel
         # =====================================
-        # Backslashes vorher ersetzen (verhindert SyntaxError in f-String)
         html_safe_text = reflection_text.replace('\n', '<br>')
 
         html_content = f"""
@@ -462,8 +461,8 @@ async def generate_weekly_reflection():
                 body {{
                     font-family: 'Helvetica', 'Arial', sans-serif;
                     line-height: 1.6;
-                    color: #e2e8f0;
-                    background: #0f172a;
+                    color: #000000;
+                    background: #ffffff;
                     margin: 0;
                     padding: 0;
                 }}
@@ -480,15 +479,16 @@ async def generate_weekly_reflection():
                 }}
                 .date {{
                     text-align: center;
-                    color: #94a3b8;
+                    color: #4b5563;
                     font-size: 1.1em;
                     margin-bottom: 2em;
                 }}
                 .content {{
                     font-size: 1.05em;
+                    color: #000000;
                 }}
                 h2, h3 {{
-                    color: #a5b4fc;
+                    color: #4b5563;
                     margin-top: 1.5em;
                 }}
                 ul, ol {{
@@ -496,7 +496,7 @@ async def generate_weekly_reflection():
                 }}
                 hr {{
                     border: none;
-                    border-top: 1px solid #334155;
+                    border-top: 1px solid #d1d5db;
                     margin: 2em 0;
                 }}
             </style>
@@ -516,7 +516,7 @@ async def generate_weekly_reflection():
         pdf_bytes = HTML(string=html_content).write_pdf()
 
         # =====================================
-        # Dialog mit Markdown + PDF-Download
+        # Dialog aktualisieren
         # =====================================
         reflection_content.clear()
         reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
@@ -529,7 +529,7 @@ async def generate_weekly_reflection():
 
         reflection_dialog.value = True
 
-        ui.notify('Reflexion generiert, gespeichert & PDF bereit zum Download', type='positive')
+        ui.notify('Reflexion generiert, gespeichert & PDF bereit (weißes Layout, schwarzer Text)', type='positive')
 
     except Exception as e:
         ui.notify(f'Reflexion fehlgeschlagen: {str(e)}', type='negative')
