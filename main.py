@@ -10,7 +10,7 @@ import io
 import os
 import shutil
 
-# Für PDF-Export (druckfreundlich: weißer Hintergrund, schwarzer Text)
+# Für PDF-Export (weißes Layout, schwarzer Text, blauer Titel)
 from weasyprint import HTML
 
 # Lokale Module
@@ -446,7 +446,7 @@ async def generate_weekly_reflection():
         db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
 
         # =====================================
-        # PDF-Generierung – weißes Layout, schwarzer Text, blauer Titel
+        # PDF-Generierung – weißer Hintergrund, schwarzer Text, blauer Titel
         # =====================================
         html_safe_text = reflection_text.replace('\n', '<br>')
 
