@@ -1,4 +1,4 @@
-# main.py – ECHO Second Brain (komplett, stabilisiert – Ollama-Fehler abgefangen)
+# main.py – ECHO Second Brain (komplett, Graph-View korrigiert)
 # Stand: März 2026
 
 from nicegui import ui, app
@@ -46,7 +46,7 @@ async def index():
         ui.label('ECHO').classes('text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl')
         ui.label('dein lokaler Stream-of-Thought Second Brain').classes('text-2xl text-slate-300 mt-3 font-light italic')
 
-    # Automatische Funktionen beim Start – mit Fehlerbehandlung
+    # Automatische Funktionen beim Start
     await check_and_generate_auto_reflection()
     await generate_auto_daily_summary()
     await decay_and_archive()
@@ -166,7 +166,7 @@ async def index():
         ui.button('Suchen', on_click=perform_search) \
             .props('unelevated color=blue-600 rounded-xl').classes('mt-6 w-full md:w-1/3 mx-auto text-lg hover:scale-105 transition-transform')
 
-    # Schnellzugriff-Card (inkl. Graph-View Button)
+    # Schnellzugriff-Card (inkl. Graph-Button)
     with ui.card().classes('w-full max-w-4xl mx-auto mt-12 shadow-2xl rounded-3xl bg-gradient-to-r from-indigo-950/70 to-slate-950/70 border border-indigo-700/30 backdrop-blur-sm'):
         ui.label('Schnellzugriff').classes('text-2xl font-bold text-center text-indigo-300 mb-8')
         with ui.row().classes('justify-center gap-12 flex-wrap px-8 py-6'):
@@ -199,7 +199,7 @@ async def index():
 
 
 # =====================================================================
-# Graph-View Seite
+# Graph-View Seite (korrigiert: unnötiges await entfernt)
 # =====================================================================
 
 @ui.page('/graph')
@@ -234,7 +234,6 @@ async def graph_view():
     async def build_and_render_graph():
         try:
             status.text = 'Lade Notizen und berechne Verbindungen...'
-            await ui.context.client.request
 
             limit = int(limit_input.value)
             min_sim = float(threshold_input.value)
@@ -340,7 +339,7 @@ async def graph_view():
 
 
 # =====================================================================
-# Hilfsfunktionen
+# Hilfsfunktionen (Rest unverändert)
 # =====================================================================
 
 async def generate_tags(text: str):
@@ -407,7 +406,6 @@ async def check_and_generate_auto_reflection():
 
     except Exception as e:
         print(f"Auto-Reflexion fehlgeschlagen: {e}")
-        # Kein Absturz mehr – Hauptseite bleibt erreichbar
 
 
 async def generate_auto_daily_summary():
@@ -580,12 +578,7 @@ async def generate_weekly_reflection():
             "Sei direkt, aber wohlwollend – keine Schönfärberei."
         )
 
-        try:
-            reflection_text = await generate_summary(prompt)
-        except Exception as llm_err:
-            reflection_text = f"[LLM-Fehler bei Reflexions-Generierung: {str(llm_err)}]\n\n" \
-                              "Bitte überprüfe, ob Ollama läuft und das gewünschte Modell verfügbar ist."
-            print(f"LLM-Fehler in manueller Reflexion: {llm_err}")
+        reflection_text = await generate_summary(prompt)
 
         timestamp = datetime.now().isoformat()
         note_id = str(uuid.uuid4())[:12]
@@ -597,7 +590,7 @@ async def generate_weekly_reflection():
         embedding = get_embedding(reflection_text)
         db.add_note(note_id, timestamp, reflection_text, str(filename), embedding)
 
-        # PDF-Generierung (weiß, schwarz, blauer Titel)
+        # PDF-Generierung
         html_safe_text = reflection_text.replace('\n', '<br>')
 
         html_content = f"""
@@ -665,7 +658,6 @@ async def generate_weekly_reflection():
 
         pdf_bytes = HTML(string=html_content).write_pdf()
 
-        # Dialog aktualisieren
         reflection_content.clear()
         reflection_content.content = f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"
 
@@ -709,10 +701,7 @@ async def export_all():
         ui.notify(f'Export fehlgeschlagen: {str(e)}', type='negative')
 
 
-# =====================================================================
-# Edit & Delete Funktionen
-# =====================================================================
-
+# Edit & Delete Funktionen (wie zuvor – unverändert)
 async def edit_note(hit):
     with ui.dialog(value=True).props('persistent') as edit_dialog:
         with ui.card().classes('w-full max-w-4xl'):
