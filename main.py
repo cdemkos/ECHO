@@ -448,6 +448,9 @@ async def generate_weekly_reflection():
         # =====================================
         # PDF-Generierung
         # =====================================
+        # Backslashes vorher ersetzen, damit f-String keinen SyntaxError wirft
+        html_safe_text = reflection_text.replace('\n', '<br>')
+
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -503,7 +506,7 @@ async def generate_weekly_reflection():
                 <h1>Wöchentliche Reflexion</h1>
                 <div class="date">{timestamp[:19].replace('T', ' ')}</div>
                 <div class="content">
-                    {reflection_text.replace('\n', '<br>')}
+                    {html_safe_text}
                 </div>
             </div>
         </body>
@@ -517,7 +520,7 @@ async def generate_weekly_reflection():
         # =====================================
         reflection_content.clear()
         reflection_content.append(ui.markdown(f"**Gespeichert als:** {filename.name}\n\n{reflection_text}"))
-        
+
         ui.button(
             'Als PDF herunterladen',
             icon='picture_as_pdf',
@@ -559,7 +562,7 @@ async def export_all():
 
 
 # =====================================================================
-# Edit & Delete Funktionen (falls noch nicht vorhanden – aus vorheriger Version)
+# Edit & Delete Funktionen
 # =====================================================================
 
 async def edit_note(hit):
