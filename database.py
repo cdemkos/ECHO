@@ -1,8 +1,8 @@
 # database.py – NoteDB
 #
-# Einzige Quelle der Wahrheit für alle Datenbankoperationen.
-# Alle Methoden sind thread-sicher via explizitem Lock.
-# db.cursor ist privat (_cursor) — externer Zugriff ist verboten.
+# Einzige Quelle für alle Datenbankoperationen.
+# Thread-sicher via explizitem Lock.
+# _cursor ist privat — externer Zugriff verboten.
 
 import logging
 import os
@@ -21,12 +21,11 @@ DATA_DIR   = Path("data")
 DB_PATH    = DATA_DIR / "echo.db"
 CHROMA_DIR = DATA_DIR / "chroma"
 
-# Erkennungs-Präfix für LLM-Fehler — diese Strings NIEMALS als Notiz speichern
 LLM_ERROR_PREFIXES = ("[Timeout", "[LLM-Fehler", "[llm-fehler")
 
 
 def is_llm_error(text: str) -> bool:
-    """Gibt True zurück wenn text eine LLM-Fehlermeldung ist, keine echte Notiz."""
+    """True wenn text eine LLM-Fehlermeldung ist, keine echte Notiz."""
     t = text.strip()
     return any(t.startswith(p) for p in LLM_ERROR_PREFIXES)
 
@@ -35,25 +34,27 @@ class NoteDB:
     def __init__(self):
         DATA_DIR.mkdir(exist_ok=True)
 
-        # ChromaDB
         self.client     = chromadb.PersistentClient(path=str(CHROMA_DIR))
         self.collection = self.client.get_or_create_collection(name="echo_notes")
 
-        # SQLite — check_same_thread=False weil NiceGUI async verwendet
         self.conn    = sqlite3.connect(DB_PATH, check_same_thread=False)
         self._lock   = threading.Lock()
         self._cursor = self.conn.cursor()
         self._migrate()
 
-        # Embedding-Modell — lazy loaded, ein einziges Exemplar
         self._model      = None
         self._model_lock = threading.Lock()
 
-    # ── Schema ────────────────────────────────────────────────────────────────
+    # ── Schema-Migration ──────────────────────────────────────────────────────
 
     def _migrate(self) -> None:
+        """
+        Kompatibel mit bestehenden Datenbanken ohne note_type-Spalte.
+        Fügt fehlende Spalten hinzu ohne Daten zu verlieren.
+        """
         with self._lock:
-            self._cursor.executescript("""
+            # Tabelle erstellen falls sie noch nicht existiert
+            self._cursor.execute("""
                 CREATE TABLE IF NOT EXISTS notes (
                     id         TEXT PRIMARY KEY,
                     timestamp  TEXT NOT NULL,
@@ -62,11 +63,35 @@ class NoteDB:
                     tags       TEXT NOT NULL DEFAULT '',
                     note_type  TEXT NOT NULL DEFAULT 'note',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS idx_notes_ts   ON notes(timestamp DESC);
-                CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(note_type);
+                )
             """)
+
+            # Bestehende Spalten ermitteln
+            existing = {
+                row[1]
+                for row in self._cursor.execute("PRAGMA table_info(notes)").fetchall()
+            }
+
+            # Fehlende Spalten hinzufügen (ALTER TABLE unterstützt kein IF NOT EXISTS)
+            migrations = [
+                ("tags",       "ALTER TABLE notes ADD COLUMN tags TEXT NOT NULL DEFAULT ''"),
+                ("note_type",  "ALTER TABLE notes ADD COLUMN note_type TEXT NOT NULL DEFAULT 'note'"),
+                ("created_at", "ALTER TABLE notes ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"),
+            ]
+            for col, sql in migrations:
+                if col not in existing:
+                    log.info("DB-Migration: Spalte '%s' wird hinzugefügt…", col)
+                    self._cursor.execute(sql)
+
+            # Indizes
+            self._cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_ts ON notes(timestamp DESC)"
+            )
+            self._cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(note_type)"
+            )
             self.conn.commit()
+        log.info("Datenbank-Schema aktuell.")
 
     # ── Embedding ─────────────────────────────────────────────────────────────
 
@@ -102,25 +127,16 @@ class NoteDB:
         tags:      list | None = None,
         note_type: str = "note",
     ) -> None:
-        """
-        Speichert eine neue Notiz in ChromaDB und SQLite.
-        Gibt eine Exception wenn text eine LLM-Fehlermeldung ist.
-        """
         if is_llm_error(text):
-            raise ValueError(f"LLM-Fehlertext darf nicht gespeichert werden: {text[:60]}")
+            raise ValueError(f"LLM-Fehlertext wird nicht gespeichert: {text[:60]}")
 
         tags_str = ",".join(t.strip() for t in (tags or []) if t.strip())
+        meta     = {"timestamp": timestamp, "file_path": file_path,
+                    "tags": tags_str, "note_type": note_type}
 
         self.collection.add(
-            ids=[note_id],
-            embeddings=[embedding],
-            metadatas=[{
-                "timestamp": timestamp,
-                "file_path": file_path,
-                "tags":      tags_str,
-                "note_type": note_type,
-            }],
-            documents=[text],
+            ids=[note_id], embeddings=[embedding],
+            metadatas=[meta], documents=[text],
         )
         with self._lock:
             self._cursor.execute(
@@ -132,7 +148,6 @@ class NoteDB:
             self.conn.commit()
 
     def delete_note(self, note_id: str) -> None:
-        """Löscht Notiz aus ChromaDB UND SQLite — einziger Lösch-Ort."""
         try:
             self.collection.delete(ids=[note_id])
         except Exception as e:
@@ -152,7 +167,7 @@ class NoteDB:
         note_type: str = "note",
     ) -> None:
         if is_llm_error(text):
-            raise ValueError(f"LLM-Fehlertext darf nicht gespeichert werden: {text[:60]}")
+            raise ValueError(f"LLM-Fehlertext wird nicht gespeichert: {text[:60]}")
 
         tags_str = ",".join(t.strip() for t in (tags or []) if t.strip())
         meta     = {"timestamp": timestamp, "file_path": file_path,
@@ -178,17 +193,12 @@ class NoteDB:
     # ── Lesen ─────────────────────────────────────────────────────────────────
 
     def search(self, query_text: str, limit: int = 8) -> list[dict]:
-        """
-        Semantische Suche. Gibt Dicts mit id, timestamp, text, file_path, tags, similarity.
-        Filtert automatisch Fehler-Notizen und Auto-Reflexionen aus.
-        """
         n = self.collection.count()
         if n == 0:
             return []
 
         query_emb = self.embed_query(query_text)
-        # Mehr abfragen als nötig, dann filtern
-        fetch     = min(limit * 3, n)
+        fetch     = min(limit * 3, max(1, n))
         results   = self.collection.query(
             query_embeddings=[query_emb],
             n_results=fetch,
@@ -200,14 +210,10 @@ class NoteDB:
             with self._lock:
                 self._cursor.execute(
                     "SELECT timestamp, text, file_path, tags, note_type "
-                    "FROM notes WHERE id = ?",
-                    (note_id,),
+                    "FROM notes WHERE id = ?", (note_id,),
                 )
                 row = self._cursor.fetchone()
-            if not row:
-                continue
-            # LLM-Fehler und reine Auto-Reflexionen nicht in Suchergebnissen zeigen
-            if is_llm_error(row[1]):
+            if not row or is_llm_error(row[1]):
                 continue
             similarity = max(0.0, 1.0 - results["distances"][0][i])
             hits.append({
@@ -224,12 +230,10 @@ class NoteDB:
         return hits
 
     def get_note_by_id(self, note_id: str) -> dict | None:
-        """Gibt eine einzelne Notiz zurück, oder None."""
         with self._lock:
             row = self._cursor.execute(
                 "SELECT id, timestamp, text, file_path, tags, note_type "
-                "FROM notes WHERE id = ?",
-                (note_id,),
+                "FROM notes WHERE id = ?", (note_id,),
             ).fetchone()
         if not row:
             return None
@@ -237,11 +241,6 @@ class NoteDB:
                 "file_path": row[3], "tags": row[4], "note_type": row[5]}
 
     def get_notes_since(self, since_iso: str, note_type: str | None = None) -> list[tuple]:
-        """
-        Gibt (id, timestamp, text, file_path) zurück.
-        note_type=None → alle; note_type='note' → nur echte Notizen.
-        Filtert LLM-Fehler automatisch aus.
-        """
         with self._lock:
             if note_type:
                 rows = self._cursor.execute(
@@ -258,7 +257,6 @@ class NoteDB:
         return [(r[0], r[1], r[2], r[3]) for r in rows if not is_llm_error(r[2])]
 
     def get_old_unreferenced(self, cutoff_iso: str, ref_cutoff_iso: str) -> list[tuple]:
-        """(id, timestamp, file_path) für Notizen die archiviert werden sollen."""
         with self._lock:
             return self._cursor.execute("""
                 SELECT id, timestamp, file_path FROM notes
@@ -271,11 +269,9 @@ class NoteDB:
             """, (cutoff_iso, ref_cutoff_iso)).fetchall()
 
     def auto_note_exists_today(self, note_type: str) -> bool:
-        """
-        Prüft ob heute bereits eine Auto-Notiz des gegebenen Typs existiert.
-        Ersetzt note_exists_matching() — sucht nach note_type statt Text-Fragment.
-        """
-        today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+        """Prüft ob heute bereits eine Auto-Notiz dieses Typs existiert."""
+        import datetime as dt
+        today = dt.datetime.now().strftime("%Y-%m-%d")
         with self._lock:
             row = self._cursor.execute(
                 "SELECT id FROM notes WHERE timestamp LIKE ? AND note_type = ? LIMIT 1",
@@ -292,9 +288,11 @@ class NoteDB:
             return self._cursor.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
 
     def count_today(self) -> int:
-        today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+        import datetime as dt
+        today = dt.datetime.now().strftime("%Y-%m-%d")
         with self._lock:
             return self._cursor.execute(
-                "SELECT COUNT(*) FROM notes WHERE timestamp LIKE ? AND note_type = 'note'",
+                "SELECT COUNT(*) FROM notes "
+                "WHERE timestamp LIKE ? AND note_type = 'note'",
                 (f"{today}%",),
             ).fetchone()[0]

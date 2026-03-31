@@ -1,40 +1,32 @@
-# embedder.py – öffentlicher Embedding-Einstiegspunkt für main.py
+# embedder.py – Embedding-Einstiegspunkt
 #
-# Delegiert an NoteDB.model um RAM zu sparen (eine Instanz, nicht zwei).
-# main.py importiert get_embedding() von hier; NoteDB.search() nutzt db.embed_query().
+# Einfach und ohne Zirkulärimport:
+# main.py importiert get_embedding() von hier.
+# Beide (embedder + NoteDB) haben ihr eigenes Modell-Exemplar.
+# Das ist ~500 MB RAM extra — akzeptabel, da das Modell nur einmal geladen wird.
+# Wer RAM sparen will: main.py auf db.embed() umstellen und embedder.py entfernen.
 
-from __future__ import annotations
-from typing import TYPE_CHECKING
+import threading
+from sentence_transformers import SentenceTransformer
 
-if TYPE_CHECKING:
-    pass
-
-_db_instance = None
-
-
-def _get_db():
-    global _db_instance
-    if _db_instance is None:
-        from database import NoteDB
-        _db_instance = NoteDB.__new__(NoteDB)
-        # Nur das Modell initialisieren, keine DB-Verbindung
-        import threading
-        _db_instance._model      = None
-        _db_instance._model_lock = threading.Lock()
-    return _db_instance
+_model:      SentenceTransformer | None = None
+_model_lock: threading.Lock             = threading.Lock()
 
 
 def get_embedding(text: str) -> list:
     """
-    Gibt den Embedding-Vektor für text als Dokument zurück.
-    Nutzt das Modell aus NoteDB um doppeltes RAM-Laden zu vermeiden.
+    Embedding für ein Dokument (search_document: Prefix).
+    Thread-safe, lazy-loaded.
     """
-    from database import NoteDB
-    # Nutze das globale db-Objekt aus main wenn verfügbar,
-    # sonst eigene Instanz für CLI-Nutzung (echo_to_claude.py)
-    try:
-        import main as _main
-        db = _main.db
-    except (ImportError, AttributeError):
-        db = _get_db()
-    return db.embed(text)
+    global _model
+    if _model is None:
+        with _model_lock:
+            if _model is None:
+                print("Lade Embedding-Modell…")
+                _model = SentenceTransformer(
+                    "nomic-ai/nomic-embed-text-v1.5",
+                    trust_remote_code=True,
+                    device="cpu",
+                )
+                print("Embedding-Modell geladen.")
+    return _model.encode(f"search_document: {text}").tolist()
