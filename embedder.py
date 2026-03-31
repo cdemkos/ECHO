@@ -1,21 +1,40 @@
-# embedder.py – globales, lazy-loaded Embedding-Modell
+# embedder.py – öffentlicher Embedding-Einstiegspunkt für main.py
+#
+# Delegiert an NoteDB.model um RAM zu sparen (eine Instanz, nicht zwei).
+# main.py importiert get_embedding() von hier; NoteDB.search() nutzt db.embed_query().
 
-from sentence_transformers import SentenceTransformer
-import threading
+from __future__ import annotations
+from typing import TYPE_CHECKING
 
-_model = None
-_model_lock = threading.Lock()
+if TYPE_CHECKING:
+    pass
 
-def get_embedding(text: str):
-    global _model
-    if _model is None:
-        with _model_lock:
-            if _model is None:  # Double-Check-Locking
-                print("Lade Embedding-Modell (einmalig, bitte warten...)")
-                _model = SentenceTransformer(
-                    'nomic-ai/nomic-embed-text-v1.5',
-                    trust_remote_code=True,
-                    device='cpu'  # oder 'cuda' wenn du eine GPU hast
-                )
-                print("Embedding-Modell geladen!")
-    return _model.encode(f"search_query: {text}").tolist()
+_db_instance = None
+
+
+def _get_db():
+    global _db_instance
+    if _db_instance is None:
+        from database import NoteDB
+        _db_instance = NoteDB.__new__(NoteDB)
+        # Nur das Modell initialisieren, keine DB-Verbindung
+        import threading
+        _db_instance._model      = None
+        _db_instance._model_lock = threading.Lock()
+    return _db_instance
+
+
+def get_embedding(text: str) -> list:
+    """
+    Gibt den Embedding-Vektor für text als Dokument zurück.
+    Nutzt das Modell aus NoteDB um doppeltes RAM-Laden zu vermeiden.
+    """
+    from database import NoteDB
+    # Nutze das globale db-Objekt aus main wenn verfügbar,
+    # sonst eigene Instanz für CLI-Nutzung (echo_to_claude.py)
+    try:
+        import main as _main
+        db = _main.db
+    except (ImportError, AttributeError):
+        db = _get_db()
+    return db.embed(text)

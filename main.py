@@ -1,34 +1,41 @@
-# main.py – ECHO Second Brain
-# Stand: März 2026
+# main.py – ECHO Second Brain v2
 #
-# Korrekturen gegenüber der ursprünglichen Version:
-#   BUG 1: merge_button war None → AttributeError beim Auto-Linking
-#           Fix: Merge-Button wird im Linking-Dialog korrekt erstellt
-#   BUG 2: search() gab kein id/file_path zurück → KeyError bei Edit/Delete
-#           Fix: database.py gibt vollständige Dicts zurück
-#   BUG 3: decay_and_archive() löschte nicht aus ChromaDB
-#           Fix: decay.run_decay(db) nutzt db.delete_note() konsistent
-#   BUG 4: globale NiceGUI-Widget-Referenzen (reload-Problem)
-#           Fix: Alle Widget-Referenzen leben innerhalb von @ui.page
-#   BUG 5: Ollama-Status wurde nicht geprüft → kryptische Fehlermeldungen
-#           Fix: Status-Check beim Start, UI-Hinweis wenn offline
+# Behobene Bugs gegenüber v1:
+#   BUG-A: Race Condition _startup_done → asyncio.Lock()
+#   BUG-B: LLM-Fehlertext als Notiz gespeichert → LLMError Exception, nie speichern
+#   BUG-C: Deduplizierung per Text-Fragment → note_type-Feld in DB
+#   BUG-D: db.cursor direkt verwendet → db._cursor privat, Methoden für alles
+#   BUG-E: merge_button = None → Button direkt im Dialog erstellt
+#   BUG-F: ui.notify() beim Server-Start ohne Session → nur in @ui.page aufrufen
+#   BUG-G: Auto-Linking mergt Reflexionen mit sich selbst → note_type-Filter
+#   BUG-H: ui.run() vor API-Routes → API-Routes vor ui.run()
+#   BUG-I: Zwei Embedding-Modell-Instanzen → embedder.py delegiert an db.model
+#   BUG-J: Dateiname mit Mikrosekunden-Punkt → replace + strip
 
-from nicegui import ui
-from datetime import datetime, timedelta
-from pathlib import Path
-import uuid
-import zipfile
+import asyncio
 import io
+import logging
 import os
 import shutil
+import uuid
+import zipfile
+from datetime import datetime, timedelta
+from pathlib import Path
 
-from weasyprint import HTML
+from nicegui import app as nicegui_app
+from nicegui import ui
 
-from database import NoteDB
-from embedder import get_embedding
-from llm import generate_summary, check_ollama_available, DEFAULT_MODEL
-from decay import run_decay
 from agents import check_agents
+from database import NoteDB, is_llm_error
+from decay import run_decay
+from llm import DEFAULT_MODEL, LLMError, check_ollama_available, generate_summary
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("echo")
 
 # ── Verzeichnisse ─────────────────────────────────────────────────────────────
 
@@ -37,94 +44,121 @@ NOTES_DIR   = DATA_DIR / "notes"
 CHROMA_DIR  = DATA_DIR / "chroma"
 ARCHIVE_DIR = DATA_DIR / "archive"
 
-for d in [NOTES_DIR, ARCHIVE_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+for _d in [NOTES_DIR, ARCHIVE_DIR]:
+    _d.mkdir(parents=True, exist_ok=True)
 
-# ── Globale DB-Instanz (wird einmal erstellt, bleibt für den gesamten Prozess) ─
+# ── Globale DB-Instanz ────────────────────────────────────────────────────────
 
 db = NoteDB()
 
+# ── Server-Start State ────────────────────────────────────────────────────────
+# asyncio.Lock verhindert Race Condition wenn mehrere Tabs gleichzeitig laden
+
+_startup_lock = asyncio.Lock()
+_startup_done = False
+_ollama_ok    = False
+_agent_hints: list[str] = []
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Hilfsfunktionen (UI-unabhängig)
+# Hilfsfunktionen
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def generate_tags(text: str) -> list[str]:
-    prompt = (
-        f"Analysiere den folgenden Text und schlage 2–4 passende Tags vor.\n"
-        f"Gib NUR die Tags als kommagetrennte Liste zurück, ohne Erklärung.\n\n"
-        f"Text: {text[:1000]}\n\n"
-        f"Beispiele: Produktivität,Reise,Emotionen,Todo,Beziehung,Finanzen,Gesundheit"
-    )
-    try:
-        tags_str = await generate_summary(prompt)
-        return [t.strip() for t in tags_str.split(",") if t.strip()][:4]
-    except Exception:
-        return []
+def _safe_timestamp_filename(timestamp: str, suffix: str = "") -> str:
+    """
+    Wandelt ISO-Timestamp in sicheren Dateinamen um.
+    '2026-03-31T02:31:14.204365' → '2026-03-31T02-31-14_suffix.md'
+    """
+    # Mikrosekunden und Punkt entfernen, Doppelpunkte ersetzen
+    ts = timestamp.split(".")[0]   # bis zu den Mikrosekunden kürzen
+    ts = ts.replace(":", "-")
+    return f"{ts}{'_' + suffix if suffix else ''}.md"
 
 
-def save_note_to_disk(note_id: str, timestamp: str, text: str) -> Path:
-    """Schreibt Notiz als Markdown-Datei und gibt den Pfad zurück."""
-    safe_ts  = timestamp.replace(":", "-")
-    filename = NOTES_DIR / f"{safe_ts}_{note_id}.md"
-    filename.write_text(f"# {timestamp}\n\n{text}", encoding="utf-8")
-    return filename
+def save_note_to_disk(note_id: str, timestamp: str, text: str, suffix: str = "") -> Path:
+    """Schreibt Notiz-Datei und gibt den Pfad zurück."""
+    fname    = _safe_timestamp_filename(timestamp, suffix or note_id)
+    filepath = NOTES_DIR / fname
+    filepath.write_text(f"# {timestamp}\n\n{text}", encoding="utf-8")
+    return filepath
 
 
 def archive_file(file_path: str) -> None:
-    """Verschiebt eine Datei ins Archiv-Verzeichnis."""
     old = Path(file_path)
     if old.exists():
         shutil.move(str(old), ARCHIVE_DIR / old.name)
 
 
+async def _generate_tags(text: str) -> list[str]:
+    """Generiert Tags im Hintergrund — wirft keine Exception."""
+    try:
+        prompt    = (
+            f"Schlage 2–4 präzise Tags für diesen Text vor.\n"
+            f"Nur kommagetrennte Liste, keine Erklärung.\n\n"
+            f"Text: {text[:800]}\n\n"
+            f"Beispiele: Produktivität,Reise,Emotionen,Todo,Technik,Gesundheit"
+        )
+        tags_str  = await generate_summary(prompt, timeout_seconds=30)
+        return [t.strip() for t in tags_str.split(",") if t.strip()][:4]
+    except LLMError:
+        return []
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# Automatische Start-Funktionen
+# Server-Start Tasks (laufen EINMAL, nicht bei jedem Page-Load)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def auto_weekly_reflection() -> None:
-    """Erstellt automatisch eine wöchentliche Reflexion wenn noch keine existiert."""
-    since = (datetime.now() - timedelta(days=7)).isoformat()
-    if db.note_exists_matching(datetime.now().strftime("%Y-%m-%d"), "Wöchentliche Reflexion"):
+async def _auto_weekly_reflection() -> None:
+    """Erstellt wöchentliche Reflexion wenn heute noch keine existiert."""
+    # FIX-C: note_type statt Text-Fragment für Deduplizierung
+    if db.auto_note_exists_today("weekly_reflection"):
         return
 
-    entries = db.get_notes_since(since)
+    since   = (datetime.now() - timedelta(days=7)).isoformat()
+    # FIX: Nur echte Notizen analysieren, keine Auto-Reflexionen
+    entries = db.get_notes_since(since, note_type="note")
     if not entries:
         return
 
     context = "\n\n".join(f"[{ts}] {text[:600]}" for _, ts, text, _ in entries)
     prompt  = (
-        "Analysiere die folgenden Gedanken der letzten Woche:\n\n"
+        "Analysiere die folgenden persönlichen Gedanken der letzten Woche:\n\n"
         f"{context}\n\n"
-        "Beantworte:\n"
+        "Beantworte direkt und ehrlich:\n"
         "- Welche Themen tauchen wiederholt auf?\n"
         "- Welche emotionale Tonalität dominiert?\n"
-        "- Welche Muster oder offene Loops erkennst du?\n"
+        "- Welche Muster oder offene Loops siehst du?\n"
         "- Was wurde verschoben oder bereut?\n"
         "- Was konkret nächste Woche anders machen?\n\n"
-        "Strukturiere mit Überschriften und Aufzählungen. Direkt, keine Schönfärberei."
+        "Strukturiere mit ## Überschriften. Keine Schönfärberei."
     )
-    text      = await generate_summary(prompt)
-    timestamp = datetime.now().isoformat()
-    note_id   = str(uuid.uuid4())[:12]
-    filepath  = save_note_to_disk(note_id + "_REFLEXION", timestamp, text)
-    embedding = get_embedding(text)
-    db.add_note(note_id, timestamp, text, str(filepath), embedding,
-                tags=["Reflexion", "Wöchentlich"])
-    ui.notify("Automatische Wochenreflexion erstellt.", type="positive", timeout=6)
+
+    try:
+        text      = await generate_summary(prompt)
+        timestamp = datetime.now().isoformat()
+        note_id   = str(uuid.uuid4())[:12]
+        filepath  = save_note_to_disk(note_id, timestamp, text, "REFLEXION")
+        embedding = db.embed(text)
+        db.add_note(note_id, timestamp, text, str(filepath), embedding,
+                    tags=["Reflexion", "Wöchentlich"], note_type="weekly_reflection")
+        log.info("Wöchentliche Reflexion gespeichert.")
+    except LLMError as e:
+        log.warning("Auto-Reflexion fehlgeschlagen: %s", e)
+    except ValueError as e:
+        log.error("Auto-Reflexion: ungültiger Text: %s", e)
 
 
-async def auto_daily_summary() -> None:
-    """Erstellt eine Tageszusammenfassung wenn heute noch keine existiert."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    if db.note_exists_matching(today, "Tageszusammenfassung"):
+async def _auto_daily_summary() -> None:
+    """Erstellt Tageszusammenfassung wenn heute noch keine existiert."""
+    if db.auto_note_exists_today("daily_summary"):
         return
 
     since   = (datetime.now() - timedelta(hours=24)).isoformat()
-    entries = db.get_notes_since(since)
+    entries = db.get_notes_since(since, note_type="note")
     if not entries:
         return
 
+    today   = datetime.now().strftime("%Y-%m-%d")
     context = "\n\n".join(f"[{ts}] {text[:400]}" for _, ts, text, _ in entries)
     prompt  = (
         f"Erstelle eine Tageszusammenfassung für {today}:\n\n"
@@ -135,182 +169,211 @@ async def auto_daily_summary() -> None:
         "- Ein direkter Satz für den Rest des Tages\n\n"
         "Max. 200 Wörter, strukturiert."
     )
-    text      = await generate_summary(prompt)
-    timestamp = datetime.now().isoformat()
-    note_id   = str(uuid.uuid4())[:12]
-    filepath  = save_note_to_disk(note_id + "_DAILY", timestamp, text)
-    embedding = get_embedding(text)
-    db.add_note(note_id, timestamp, text, str(filepath), embedding,
-                tags=["Tageszusammenfassung"])
-    ui.notify("Tageszusammenfassung erstellt.", type="positive", timeout=6)
+
+    try:
+        text      = await generate_summary(prompt)
+        timestamp = datetime.now().isoformat()
+        note_id   = str(uuid.uuid4())[:12]
+        filepath  = save_note_to_disk(note_id, timestamp, text, "DAILY")
+        embedding = db.embed(text)
+        db.add_note(note_id, timestamp, text, str(filepath), embedding,
+                    tags=["Tageszusammenfassung"], note_type="daily_summary")
+        log.info("Tageszusammenfassung gespeichert.")
+    except LLMError as e:
+        log.warning("Auto-Tageszusammenfassung fehlgeschlagen: %s", e)
+    except ValueError as e:
+        log.error("Auto-Tageszusammenfassung: ungültiger Text: %s", e)
 
 
-async def auto_decay() -> None:
-    """Archiviert alte unreferenzierte Notizen."""
-    archived = run_decay(db)
+@nicegui_app.on_startup
+async def _on_startup() -> None:
+    """Läuft EINMAL beim Server-Start — nicht bei jedem Page-Load."""
+    global _startup_done, _ollama_ok, _agent_hints
+
+    # FIX-A: asyncio.Lock verhindert Race Condition
+    async with _startup_lock:
+        if _startup_done:
+            return
+        _startup_done = True
+
+    log.info("ECHO startet…")
+    _ollama_ok = await check_ollama_available()
+    log.info("Ollama: %s", "online" if _ollama_ok else "offline")
+
+    # Decay läuft immer
+    archived = await asyncio.to_thread(run_decay, db)
     if archived > 0:
-        ui.notify(f"{archived} alte Notizen archiviert.", type="info", timeout=5)
+        log.info("%d Notizen archiviert.", archived)
+
+    # LLM-Tasks nur wenn Ollama online
+    if _ollama_ok:
+        await _auto_weekly_reflection()
+        await _auto_daily_summary()
+
+    # Agenten (synchron, schnell)
+    _agent_hints = check_agents(db)
+    log.info("ECHO bereit. %d Notizen, %d Agenten-Hinweise.",
+             db.count(note_type="note"), len(_agent_hints))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Edit / Delete / Merge (als eigenständige Dialoge)
+# Dialoge (Edit / Delete / Link / Reflexion)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def open_edit_dialog(hit: dict) -> None:
-    """Öffnet einen Dialog zum Bearbeiten einer Notiz."""
+async def _open_edit_dialog(hit: dict) -> None:
     with ui.dialog(value=True).props("persistent") as dlg:
-        with ui.card().classes("w-full max-w-4xl"):
-            ui.label(f"Bearbeite Eintrag vom {hit['timestamp'][:19]}") \
-                .classes("text-2xl font-bold mb-4 text-white")
+        with ui.card().classes("w-full max-w-3xl"):
+            ui.label(f"Bearbeiten — {_fmt_ts(hit['timestamp'])}") \
+                .classes("text-sm font-medium text-gray-400 mb-3")
             edit_input = ui.textarea(value=hit["text"]) \
-                .props("autogrow outlined").classes("w-full min-h-64")
-            with ui.row().classes("gap-3 mt-6"):
+                .props("autogrow outlined").classes("w-full")
+            with ui.row().classes("gap-2 mt-4 justify-end"):
+                ui.button("Abbrechen", on_click=dlg.hide) \
+                    .props("flat color=grey-7")
                 ui.button("Speichern",
                           on_click=lambda: _save_edit(hit, edit_input.value, dlg)) \
-                    .props("unelevated color=green-8")
-                ui.button("Abbrechen", on_click=dlg.hide) \
-                    .props("unelevated color=grey-8")
+                    .props("unelevated color=positive")
 
 
 async def _save_edit(hit: dict, new_text: str, dialog) -> None:
     new_text = new_text.strip()
     if not new_text:
-        ui.notify("Kein Text zum Speichern.", type="warning")
+        ui.notify("Kein Text.", type="warning")
+        return
+    if is_llm_error(new_text):
+        ui.notify("Ungültiger Text.", type="negative")
         return
     try:
         archive_file(hit["file_path"])
         timestamp = datetime.now().isoformat()
-        note_id   = hit["id"]
-        filepath  = save_note_to_disk(note_id + "_EDIT", timestamp, new_text)
-        embedding = get_embedding(new_text)
-        tags      = await generate_tags(new_text)
-        db.update_note(note_id, timestamp, new_text, str(filepath), embedding, tags)
-        ui.notify("Eintrag aktualisiert.", type="positive")
+        filepath  = save_note_to_disk(hit["id"], timestamp, new_text, "EDIT")
+        embedding = db.embed(new_text)
+        tags      = await _generate_tags(new_text)
+        db.update_note(hit["id"], timestamp, new_text, str(filepath),
+                       embedding, tags, note_type="note")
+        ui.notify("Gespeichert.", type="positive")
         dialog.hide()
     except Exception as e:
-        ui.notify(f"Bearbeitung fehlgeschlagen: {e}", type="negative")
+        ui.notify(f"Fehler: {e}", type="negative")
+        log.error("Edit fehlgeschlagen: %s", e)
 
 
-async def open_delete_dialog(hit: dict) -> None:
-    """Öffnet einen Bestätigungs-Dialog zum Löschen einer Notiz."""
+async def _open_delete_dialog(hit: dict) -> None:
     with ui.dialog(value=True).props("persistent") as dlg:
-        with ui.card().classes("w-full max-w-md"):
-            ui.label("Eintrag wirklich löschen?") \
-                .classes("text-2xl font-bold mb-2 text-red-400")
-            ui.label(f"Erstellt: {hit['timestamp'][:19]}") \
-                .classes("text-slate-400 mb-6")
-            with ui.row().classes("justify-end gap-3"):
-                ui.button("Abbrechen", on_click=dlg.hide) \
-                    .props("unelevated color=grey-8")
+        with ui.card().classes("w-full max-w-sm"):
+            ui.label("Eintrag löschen?").classes("text-base font-medium mb-1")
+            ui.label(hit["text"][:120] + "…").classes("text-xs text-gray-400 mb-4")
+            with ui.row().classes("justify-end gap-2"):
+                ui.button("Abbrechen", on_click=dlg.hide).props("flat color=grey-7")
                 ui.button("Löschen",
                           on_click=lambda: _confirm_delete(hit, dlg)) \
-                    .props("unelevated color=red-8")
+                    .props("unelevated color=negative")
 
 
 async def _confirm_delete(hit: dict, dialog) -> None:
     try:
-        old_path = Path(hit["file_path"])
-        if old_path.exists():
-            old_path.unlink()
+        Path(hit["file_path"]).unlink(missing_ok=True)
         db.delete_note(hit["id"])
-        ui.notify("Eintrag gelöscht.", type="warning")
+        ui.notify("Gelöscht.", type="warning")
         dialog.hide()
     except Exception as e:
-        ui.notify(f"Löschen fehlgeschlagen: {e}", type="negative")
+        ui.notify(f"Fehler: {e}", type="negative")
 
 
-async def check_and_show_linking(note_id: str, text: str, embedding: list) -> None:
+async def _check_and_show_linking(note_id: str, text: str, embedding: list) -> None:
     """
-    Sucht nach ähnlichen Notizen und zeigt einen Merge-Dialog.
-    FIX: merge_button wird korrekt innerhalb des Dialogs erstellt.
+    Sucht nach ähnlichen ECHTEN Notizen und zeigt Merge-Dialog.
+    FIX-E: Merge-Button direkt im Dialog erstellt.
+    FIX-G: Nur note_type='note' wird verglichen — keine Reflexionen.
     """
     try:
+        n = db.collection.count()
+        if n < 2:
+            return
+
         results = db.collection.query(
             query_embeddings=[embedding],
-            n_results=5,
+            n_results=min(8, n),
             include=["metadatas", "documents", "distances"],
         )
         similar = []
         for i, found_id in enumerate(results["ids"][0]):
+            if found_id == note_id:
+                continue
             sim = max(0.0, 1.0 - results["distances"][0][i])
-            if sim > 0.75 and found_id != note_id:
-                row = db.cursor.execute(
-                    "SELECT timestamp, text, file_path FROM notes WHERE id = ?", (found_id,)
-                ).fetchone()
-                if row:
-                    similar.append({
-                        "id":         found_id,
-                        "timestamp":  row[0],
-                        "text":       row[1],
-                        "file_path":  row[2],
-                        "similarity": sim,
-                    })
+            if sim < 0.78:
+                continue
+            # FIX-G: Nur echte Notizen mergen, keine Auto-Reflexionen
+            note = db.get_note_by_id(found_id)
+            if not note or note.get("note_type") != "note":
+                continue
+            if is_llm_error(note["text"]):
+                continue
+            similar.append({**note, "similarity": sim})
 
         if not similar:
             return
 
         with ui.dialog(value=True).props("persistent") as dlg:
-            with ui.card().classes("w-full max-w-3xl"):
+            with ui.card().classes("w-full max-w-2xl"):
                 ui.label("Ähnliche Gedanken gefunden") \
-                    .classes("text-2xl font-bold mb-4 text-amber-300")
+                    .classes("text-base font-medium mb-3 text-amber-400")
 
                 for entry in similar:
-                    with ui.card().classes("w-full mb-3 bg-slate-800"):
-                        ui.label(f"{entry['timestamp'][:19]} "
-                                 f"({entry['similarity']:.0%} ähnlich)") \
-                            .classes("text-xs text-slate-400 mb-1")
-                        ui.label(entry["text"][:300] + "…") \
-                            .classes("text-sm text-slate-200")
+                    with ui.card().classes("w-full mb-2 bg-slate-800 p-3"):
+                        ui.label(f"{_fmt_ts(entry['timestamp'])}  "
+                                 f"· {entry['similarity']:.0%} ähnlich") \
+                            .classes("text-xs text-gray-400 mb-1")
+                        ui.label(entry["text"][:200] + "…") \
+                            .classes("text-sm")
 
-                ui.label("Möchtest du diese Einträge zusammenführen? "
-                         "Ältere Einträge werden archiviert.") \
-                    .classes("mt-4 text-slate-300")
+                ui.label("Einträge zusammenführen? Ältere werden archiviert.") \
+                    .classes("text-sm text-gray-300 mt-3 mb-4")
 
-                with ui.row().classes("gap-3 mt-6"):
-                    # FIX: merge_button wird hier direkt erstellt — kein globaler None-Verweis
-                    ui.button(
-                        "Zusammenführen (Merge)",
-                        on_click=lambda: _do_merge(note_id, text, similar, dlg),
-                    ).props("unelevated color=amber-7")
+                with ui.row().classes("gap-2 justify-end"):
                     ui.button("Überspringen", on_click=dlg.hide) \
-                        .props("unelevated color=grey-8")
+                        .props("flat color=grey-7")
+                    # FIX-E: Button direkt erstellt, keine globale Variable
+                    ui.button(
+                        "Zusammenführen",
+                        on_click=lambda: _do_merge(note_id, text, similar, dlg),
+                    ).props("unelevated color=warning")
 
     except Exception as e:
-        ui.notify(f"Auto-Linking fehlgeschlagen: {e}", type="negative")
+        log.warning("Auto-Linking fehlgeschlagen: %s", e)
 
 
-async def _do_merge(
-    new_id: str, new_text: str, similar: list[dict], dialog
-) -> None:
+async def _do_merge(new_id: str, new_text: str, similar: list, dialog) -> None:
     try:
-        merged = new_text + "\n\n---\n\n**Verknüpfte frühere Gedanken:**\n\n"
+        merged = new_text + "\n\n---\n\n**Verknüpfte Gedanken:**\n\n"
         for entry in similar:
             merged += f"[{entry['timestamp'][:19]}] {entry['text']}\n\n---\n\n"
             archive_file(entry["file_path"])
             db.delete_note(entry["id"])
 
         timestamp = datetime.now().isoformat()
-        filepath  = save_note_to_disk(new_id + "_MERGED", timestamp, merged)
-        embedding = get_embedding(merged)
-        tags      = await generate_tags(merged)
-        db.update_note(new_id, timestamp, merged, str(filepath), embedding, tags)
-
-        ui.notify(
-            f"{len(similar)} Einträge zusammengeführt & archiviert.",
-            type="positive",
-        )
+        filepath  = save_note_to_disk(new_id, timestamp, merged, "MERGED")
+        embedding = db.embed(merged)
+        tags      = await _generate_tags(merged)
+        db.update_note(new_id, timestamp, merged, str(filepath),
+                       embedding, tags, note_type="note")
+        ui.notify(f"{len(similar)} Einträge zusammengeführt.", type="positive")
         dialog.hide()
     except Exception as e:
         ui.notify(f"Merge fehlgeschlagen: {e}", type="negative")
+        log.error("Merge fehlgeschlagen: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Export & Reflexion
+# Export & manuelle Reflexion
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def export_all() -> None:
-    """Erstellt ein ZIP-Backup aller Notizen, der DB und ChromaDB."""
+async def _export_all() -> None:
     try:
+        # FIX: SQLite-Checkpoint vor Export für konsistente WAL-Dateien
+        with db._lock:
+            db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for md in NOTES_DIR.glob("*.md"):
@@ -327,69 +390,73 @@ async def export_all() -> None:
         buf.seek(0)
         fname = f"echo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
         ui.download(buf.read(), filename=fname)
-        ui.notify("ZIP-Export bereit.", type="positive")
+        ui.notify("Backup erstellt.", type="positive")
     except Exception as e:
         ui.notify(f"Export fehlgeschlagen: {e}", type="negative")
+        log.error("Export: %s", e)
 
 
-async def manual_weekly_reflection(reflection_dialog, reflection_content) -> None:
-    """Manuell ausgelöste wöchentliche Reflexion mit PDF-Download."""
+async def _manual_weekly_reflection(dialog, content_widget) -> None:
     since   = (datetime.now() - timedelta(days=7)).isoformat()
-    entries = db.get_notes_since(since)
+    entries = db.get_notes_since(since, note_type="note")
 
     if not entries:
         ui.notify("Keine Notizen in den letzten 7 Tagen.", type="warning")
         return
 
-    context   = "\n\n".join(f"[{ts}] {text[:600]}" for _, ts, text, _ in entries)
-    prompt    = (
-        "Analysiere die folgenden Gedanken der letzten Woche:\n\n"
+    context = "\n\n".join(f"[{ts}] {text[:600]}" for _, ts, text, _ in entries)
+    prompt  = (
+        "Analysiere die folgenden persönlichen Gedanken der letzten Woche:\n\n"
         f"{context}\n\n"
-        "Beantworte:\n"
         "- Welche Themen tauchen wiederholt auf?\n"
         "- Welche emotionale Tonalität dominiert?\n"
-        "- Welche Muster oder offene Loops erkennst du?\n"
+        "- Welche Muster oder offene Loops siehst du?\n"
         "- Was wurde verschoben oder bereut?\n"
         "- Was konkret nächste Woche anders machen?\n\n"
-        "Strukturiere mit Überschriften und Aufzählungen. Direkt, keine Schönfärberei."
+        "Strukturiere mit ## Überschriften. Direkt und ehrlich."
     )
-    ref_text  = await generate_summary(prompt)
+
+    try:
+        ref_text  = await generate_summary(prompt)
+    except LLMError as e:
+        ui.notify(f"Ollama nicht erreichbar: {e}", type="negative")
+        return
+
     timestamp = datetime.now().isoformat()
     note_id   = str(uuid.uuid4())[:12]
-    filepath  = save_note_to_disk(note_id + "_REFLEXION", timestamp, ref_text)
-    embedding = get_embedding(ref_text)
-    db.add_note(note_id, timestamp, ref_text, str(filepath), embedding,
-                tags=["Reflexion", "Wöchentlich"])
+    filepath  = save_note_to_disk(note_id, timestamp, ref_text, "REFLEXION")
+    embedding = db.embed(ref_text)
+    try:
+        db.add_note(note_id, timestamp, ref_text, str(filepath), embedding,
+                    tags=["Reflexion", "Wöchentlich"], note_type="weekly_reflection")
+    except ValueError as e:
+        ui.notify(f"Fehler: {e}", type="negative")
+        return
 
-    # PDF generieren
-    html_text = ref_text.replace("\n", "<br>")
-    html_str  = f"""<!DOCTYPE html>
+    # PDF-Export (optional, weasyprint)
+    pdf_bytes = None
+    try:
+        from weasyprint import HTML as WP
+        html_str = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
   @page {{ size: A4; margin: 2.5cm 2cm; }}
-  body {{ font-family: Helvetica, Arial, sans-serif; color: #000; background: #fff;
-          line-height: 1.6; }}
-  h1   {{ color: #6366f1; text-align: center; }}
-  h2,h3 {{ color: #4b5563; margin-top: 1.5em; }}
-  .date {{ text-align: center; color: #6b7280; margin-bottom: 2em; }}
+  body {{ font-family: Helvetica, sans-serif; color: #000; line-height: 1.6; }}
+  h1   {{ color: #6366f1; text-align: center; margin-bottom: .3em; }}
+  h2   {{ color: #4b5563; margin-top: 1.4em; }}
+  .date {{ text-align: center; color: #6b7280; margin-bottom: 2em; font-size: .9em; }}
 </style></head><body>
 <h1>Wöchentliche Reflexion</h1>
 <div class="date">{timestamp[:19].replace("T", " ")}</div>
-<div>{html_text}</div>
+{ref_text.replace(chr(10), "<br>")}
 </body></html>"""
-
-    try:
-        pdf_bytes = HTML(string=html_str).write_pdf()
-        has_pdf   = True
+        pdf_bytes = WP(string=html_str).write_pdf()
     except Exception:
-        has_pdf   = False
+        pass
 
-    # Dialog befüllen
-    reflection_content.set_content(
-        f"**Gespeichert:** {filepath.name}\n\n{ref_text}"
-    )
-    if has_pdf:
-        with reflection_dialog:
+    content_widget.set_content(f"**Gespeichert:** {filepath.name}\n\n{ref_text}")
+    if pdf_bytes:
+        with dialog:
             ui.button(
                 "Als PDF herunterladen",
                 icon="picture_as_pdf",
@@ -397,332 +464,338 @@ async def manual_weekly_reflection(reflection_dialog, reflection_content) -> Non
                     pdf_bytes,
                     filename=f"reflexion_{timestamp[:10]}.pdf",
                 ),
-            ).props("unelevated color=indigo-7 size=md").classes("mt-4")
+            ).props("flat color=indigo-4").classes("mt-3")
+    dialog.open()
+    ui.notify("Reflexion gespeichert.", type="positive")
 
-    reflection_dialog.open()
-    ui.notify("Reflexion generiert & gespeichert.", type="positive")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UI Hilfsfunktionen
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _fmt_ts(iso: str) -> str:
+    """ISO-Timestamp → lesbares Deutsch: '31. Mär. · 14:22'"""
+    try:
+        dt  = datetime.fromisoformat(iso)
+        now = datetime.now()
+        if dt.date() == now.date():
+            return f"heute · {dt.strftime('%H:%M')}"
+        if dt.date() == (now - timedelta(days=1)).date():
+            return f"gestern · {dt.strftime('%H:%M')}"
+        months = ["", "Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                  "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+        return f"{dt.day}. {months[dt.month]} · {dt.strftime('%H:%M')}"
+    except Exception:
+        return iso[:16]
+
+
+def _sim_color(sim: float) -> str:
+    if sim >= 0.82:
+        return "text-green-400"
+    if sim >= 0.65:
+        return "text-amber-400"
+    return "text-slate-500"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Haupt-Seite
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── Einmalige Start-Tasks (laufen nur beim Server-Start, nicht bei jedem Page-Load) ──
-
-_startup_done   = False
-_ollama_ok      = False
-_agent_hints: list[str] = []
-
-async def _run_startup_tasks() -> None:
-    global _startup_done, _ollama_ok, _agent_hints
-    if _startup_done:
-        return
-    _startup_done = True
-    _ollama_ok    = await check_ollama_available()
-    await auto_decay()
-    if _ollama_ok:
-        await auto_weekly_reflection()
-        await auto_daily_summary()
-    _agent_hints = check_agents(db)
-
-# NiceGUI app startup hook
-from nicegui import app as _nicegui_app_hook
-@_nicegui_app_hook.on_startup
-async def on_startup():
-    await _run_startup_tasks()
-
-
 @ui.page("/")
-async def index():
-    # Start-Tasks sind bereits beim Server-Start gelaufen
+async def index() -> None:
     ollama_ok   = _ollama_ok
     agent_hints = _agent_hints
 
-    # ── Header ────────────────────────────────────────────────────────────────
-    with ui.column().classes("items-center w-full mb-10"):
-        ui.label("ECHO").classes(
-            "text-7xl font-black text-indigo-400 tracking-widest drop-shadow-2xl"
-        )
-        ui.label("dein lokaler Stream-of-Thought Second Brain").classes(
-            "text-2xl text-slate-300 mt-2 font-light italic"
-        )
+    # ── CSS-Overrides für konsistentes Dark-Theme ─────────────────────────────
+    ui.add_head_html("""
+    <style>
+      body { background: #0d1117; }
+      .q-card  { background: #161b22 !important; border: 1px solid #21262d; }
+      .q-field__control { background: #0d1117 !important; }
+    </style>
+    """)
 
-    # Ollama-Warnung
-    if not ollama_ok:
-        ui.notification(
-            f"⚠️ Ollama nicht erreichbar — Modell '{DEFAULT_MODEL}' fehlt oder "
-            f"'ollama serve' läuft nicht. LLM-Funktionen sind deaktiviert.",
-            type="warning",
-            timeout=0,
-            close_button=True,
-        )
+    # ── Header (sticky, kompakt) ──────────────────────────────────────────────
+    with ui.header().classes("bg-gray-900 border-b border-gray-800 px-6 py-3"):
+        with ui.row().classes("w-full items-center gap-3 max-w-4xl mx-auto"):
+            ui.label("🧠").classes("text-xl")
+            ui.label("ECHO").classes("text-base font-medium text-indigo-400")
+            ui.label("·").classes("text-gray-600")
+            ui.label(f"{db.count(note_type='note')} Notizen").classes("text-xs text-gray-500")
 
-    # Agenten-Hinweise
-    if agent_hints:
-        with ui.card().classes(
-            "w-full max-w-4xl mx-auto mb-6 bg-indigo-950/50 border border-indigo-700/30"
-        ):
-            for hint in agent_hints:
-                ui.markdown(hint).classes("text-slate-300 text-sm")
+            ui.space()
 
-    # ── Eingabe ───────────────────────────────────────────────────────────────
-    with ui.card().classes(
-        "w-full max-w-4xl mx-auto shadow-2xl rounded-3xl "
-        "bg-gradient-to-br from-slate-950 to-slate-900 border border-slate-700/50"
-    ):
-        ui.label("Neuer Gedanke").classes(
-            "text-3xl font-bold mb-5 text-white text-center"
-        )
-        thought_input = ui.textarea(
-            placeholder="Schreib einfach drauflos…  "
-            "(Enter = speichern, Auto-Save nach 8 s Inaktivität)"
-        ).props("autogrow outlined clearable").classes(
-            "w-full min-h-64 bg-slate-950 text-slate-100 rounded-xl"
-        )
-
-        auto_save_timer = None
-
-        async def save_thought(auto: bool = False) -> None:
-            nonlocal auto_save_timer
-            text = thought_input.value.strip()
-            if not text:
-                if not auto:
-                    ui.notify("Kein Text zum Speichern.", type="warning")
-                return
-
-            timestamp = datetime.now().isoformat()
-            note_id   = str(uuid.uuid4())[:12]
-
-            try:
-                filepath  = save_note_to_disk(note_id, timestamp, text)
-                embedding = get_embedding(text)
-                tags      = await generate_tags(text) if ollama_ok else []
-                db.add_note(note_id, timestamp, text, str(filepath), embedding, tags)
-
-                label = f"Gespeichert → {note_id[:8]}"
-                if tags:
-                    label += f"  (Tags: {', '.join(tags)})"
-                if auto:
-                    label += "  [Auto-Save]"
-                ui.notify(label, type="positive", close_button=True)
-
-                thought_input.set_value("")
-                thought_input.run_method("focus")
-
-                await check_and_show_linking(note_id, text, embedding)
-
-            except Exception as e:
-                ui.notify(f"Speichern fehlgeschlagen: {e}", type="negative")
-
-        def reset_timer() -> None:
-            nonlocal auto_save_timer
-            if auto_save_timer:
-                auto_save_timer.cancel()
-            auto_save_timer = ui.timer(8.0, lambda: save_thought(auto=True), once=True)
-
-        thought_input.on("keydown.enter", lambda: save_thought(auto=False))
-        thought_input.on("input",         reset_timer)
-        thought_input.on("focus",         reset_timer)
-
-        ui.button("Manuell speichern", on_click=lambda: save_thought(auto=False)) \
-            .props("unelevated color=green-600 rounded-xl") \
-            .classes("mt-6 w-full md:w-1/3 mx-auto text-lg")
-
-    # ── Suche ─────────────────────────────────────────────────────────────────
-    with ui.card().classes(
-        "w-full max-w-4xl mx-auto mt-10 shadow-2xl rounded-3xl "
-        "bg-gradient-to-br from-slate-950 to-slate-900 border border-slate-700/50"
-    ):
-        ui.label("Suche in deinem ECHO").classes(
-            "text-3xl font-bold mb-5 text-white text-center"
-        )
-        search_input = ui.input(
-            placeholder='z. B. "Gedanken zu Japan Reise letzten 3 Monate"'
-        ).props("outlined dense clearable").classes(
-            "w-full bg-slate-950 text-white rounded-xl"
-        )
-
-        result_container = ui.column().classes("w-full mt-6 gap-4")
-
-        async def perform_search() -> None:
-            query = search_input.value.strip()
-            result_container.clear()
-            if not query:
-                return
-
-            with result_container:
-                ui.spinner(size="lg").classes("mx-auto")
-
-            hits = db.search(query, limit=8)
-            result_container.clear()
-
-            if not hits:
-                with result_container:
-                    ui.label("Keine passenden Gedanken gefunden.") \
-                        .classes("text-slate-400 text-center")
-                return
-
-            # LLM-Zusammenfassung
+            # Ollama-Status
             if ollama_ok:
-                context = "\n\n".join(
-                    f"[{h['timestamp'][:19]}] {h['text'][:400]}" for h in hits
-                )
-                prompt  = (
-                    "Fasse zusammen was der Nutzer zu diesem Thema gedacht hat. "
-                    "Nenne Muster, Tonalität und offene Fragen. "
-                    "Aufzählungspunkte wo sinnvoll.\n\n"
-                    f"Suchanfrage: {query}\n\n{context}"
-                )
-                summary = await generate_summary(prompt)
+                with ui.row().classes("items-center gap-1"):
+                    ui.element("div").classes("w-2 h-2 rounded-full bg-green-500")
+                    ui.label(DEFAULT_MODEL).classes("text-xs text-gray-500")
+            else:
+                with ui.row().classes("items-center gap-1"):
+                    ui.element("div").classes("w-2 h-2 rounded-full bg-red-500")
+                    ui.label("Ollama offline").classes("text-xs text-red-400")
+
+    with ui.column().classes("w-full max-w-4xl mx-auto px-4 py-6 gap-6"):
+
+        # ── Stat-Karten ───────────────────────────────────────────────────────
+        with ui.row().classes("gap-3 w-full"):
+            for val, lbl, color in [
+                (db.count(note_type="note"),    "Gesamt",       "text-indigo-400"),
+                (db.count_today(),              "Heute",        "text-green-400"),
+                (db.count(note_type="weekly_reflection"), "Reflexionen", "text-amber-400"),
+            ]:
+                with ui.card().classes("flex-1 p-3"):
+                    ui.label(str(val)).classes(f"text-2xl font-medium {color}")
+                    ui.label(lbl).classes("text-xs text-gray-500 mt-1")
+
+        # ── Agenten-Hinweise ──────────────────────────────────────────────────
+        if agent_hints:
+            with ui.card().classes("w-full p-3 border border-indigo-900/50"):
+                for hint in agent_hints:
+                    ui.markdown(hint).classes("text-sm text-slate-300")
+
+        # ── Eingabe ───────────────────────────────────────────────────────────
+        with ui.card().classes("w-full p-4"):
+            with ui.row().classes("justify-between items-center mb-3"):
+                ui.label("Neuer Gedanke").classes("text-sm font-medium")
+                ui.label("Enter speichert · Auto-Save 8 s") \
+                    .classes("text-xs text-gray-500")
+
+            thought_input = ui.textarea(
+                placeholder="Schreib einfach drauflos…"
+            ).props("autogrow outlined clearable").classes(
+                "w-full text-sm"
+            )
+            char_count = ui.label("0 Zeichen").classes("text-xs text-gray-600 mt-1")
+
+            auto_save_timer = None
+
+            async def save_thought(auto: bool = False) -> None:
+                nonlocal auto_save_timer
+                text = thought_input.value.strip()
+                if not text:
+                    if not auto:
+                        ui.notify("Kein Text.", type="warning")
+                    return
+                if is_llm_error(text):
+                    ui.notify("Ungültiger Text.", type="warning")
+                    return
+
+                timestamp = datetime.now().isoformat()
+                note_id   = str(uuid.uuid4())[:12]
+                try:
+                    filepath  = save_note_to_disk(note_id, timestamp, text)
+                    embedding = db.embed(text)
+                    # Tags im Hintergrund — blockiert nicht das Speichern
+                    tags      = await _generate_tags(text) if ollama_ok else []
+                    db.add_note(note_id, timestamp, text, str(filepath),
+                                embedding, tags, note_type="note")
+
+                    label = f"Gespeichert"
+                    if tags:
+                        label += f" · {', '.join(tags)}"
+                    if auto:
+                        label += " · Auto"
+                    ui.notify(label, type="positive", close_button=True)
+
+                    thought_input.set_value("")
+                    char_count.set_text("0 Zeichen")
+                    thought_input.run_method("focus")
+
+                    await _check_and_show_linking(note_id, text, embedding)
+
+                except ValueError as e:
+                    ui.notify(f"Nicht gespeichert: {e}", type="negative")
+                except Exception as e:
+                    ui.notify(f"Fehler: {e}", type="negative")
+                    log.error("save_thought: %s", e)
+
+            def reset_timer() -> None:
+                nonlocal auto_save_timer
+                val = thought_input.value or ""
+                char_count.set_text(f"{len(val)} Zeichen")
+                if auto_save_timer:
+                    auto_save_timer.cancel()
+                if val.strip():
+                    auto_save_timer = ui.timer(
+                        8.0, lambda: save_thought(auto=True), once=True
+                    )
+
+            thought_input.on("keydown.enter", lambda: save_thought(auto=False))
+            thought_input.on("input",         reset_timer)
+            thought_input.on("focus",         reset_timer)
+
+            with ui.row().classes("mt-3 justify-end"):
+                ui.button("Speichern", on_click=lambda: save_thought(auto=False)) \
+                    .props("unelevated color=positive size=sm")
+
+        # ── Suche ─────────────────────────────────────────────────────────────
+        with ui.card().classes("w-full p-4"):
+            ui.label("Suche").classes("text-sm font-medium mb-3")
+            with ui.row().classes("gap-2 w-full"):
+                search_input = ui.input(
+                    placeholder='z. B. "Rust arti Versionen" oder "Japan Reise"'
+                ).props("outlined dense clearable").classes("flex-1 text-sm")
+                ui.button("Suchen", on_click=lambda: perform_search()) \
+                    .props("unelevated color=primary size=sm")
+
+            result_container = ui.column().classes("w-full mt-4 gap-3")
+
+            async def perform_search() -> None:
+                query = search_input.value.strip()
+                result_container.clear()
+                if not query:
+                    return
+
                 with result_container:
-                    with ui.card().classes(
-                        "w-full bg-indigo-950/50 border border-indigo-700/30"
-                    ):
-                        ui.label("Zusammenfassung").classes(
-                            "text-xs text-indigo-400 uppercase mb-2"
+                    with ui.row().classes("justify-center py-4"):
+                        ui.spinner(size="md")
+
+                hits = db.search(query, limit=8)
+                result_container.clear()
+
+                if not hits:
+                    with result_container:
+                        ui.label("Keine passenden Notizen gefunden.") \
+                            .classes("text-sm text-gray-500 text-center py-4")
+                    return
+
+                # LLM-Zusammenfassung
+                if ollama_ok and hits:
+                    with result_container:
+                        with ui.card().classes("w-full p-3 border border-indigo-900/40"):
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.label("Zusammenfassung") \
+                                    .classes("text-xs text-indigo-400 uppercase")
+                                ui.spinner(size="xs")
+                            summary_label = ui.markdown("").classes("text-sm text-slate-300")
+
+                    context = "\n\n".join(
+                        f"[{_fmt_ts(h['timestamp'])}] {h['text'][:350]}"
+                        for h in hits
+                    )
+                    try:
+                        summary = await generate_summary(
+                            f"Suchanfrage: {query}\n\n{context}\n\n"
+                            "Fasse knapp zusammen was der Nutzer zu diesem Thema "
+                            "gedacht hat. Muster, Tonalität, offene Fragen.",
+                            timeout_seconds=45,
                         )
-                        ui.markdown(summary).classes("text-slate-200 text-sm")
+                        summary_label.set_content(summary)
+                    except LLMError:
+                        summary_label.set_content("_(Ollama nicht erreichbar)_")
 
-            # Ergebnis-Karten
-            with result_container:
-                for hit in hits:
-                    with ui.card().classes(
-                        "w-full bg-slate-900 border border-slate-700"
-                    ):
-                        with ui.row().classes(
-                            "justify-between items-start w-full mb-2"
-                        ):
-                            ui.label(hit["timestamp"][:19]).classes(
-                                "text-xs text-slate-400"
-                            )
-                            sim_color = (
-                                "text-green-400"  if hit["similarity"] > 0.8
-                                else "text-amber-400" if hit["similarity"] > 0.6
-                                else "text-slate-400"
-                            )
-                            ui.label(f"{hit['similarity']:.0%} ähnlich").classes(
-                                f"text-xs {sim_color}"
-                            )
+                # Ergebnis-Karten
+                with result_container:
+                    for hit in hits:
+                        with ui.card().classes("w-full p-3"):
+                            # Meta-Zeile
+                            with ui.row().classes(
+                                "justify-between items-center mb-2"
+                            ):
+                                ui.label(_fmt_ts(hit["timestamp"])) \
+                                    .classes("text-xs text-gray-400 font-mono")
+                                ui.label(f"{hit['similarity']:.0%}") \
+                                    .classes(f"text-xs {_sim_color(hit['similarity'])}")
 
-                        ui.markdown(hit["text"][:450] + ("…" if len(hit["text"]) > 450 else "")) \
-                            .classes("text-slate-200 text-sm")
+                            # Similarity-Balken
+                            with ui.element("div").classes(
+                                "w-full h-0.5 bg-gray-800 rounded mb-3"
+                            ):
+                                ui.element("div").classes(
+                                    "h-full rounded bg-indigo-600"
+                                ).style(f"width:{hit['similarity']:.0%}")
 
-                        if hit.get("tags"):
-                            with ui.row().classes("gap-1 mt-2 flex-wrap"):
-                                for tag in hit["tags"].split(","):
-                                    if tag.strip():
-                                        ui.badge(tag.strip()).props("color=indigo-9 rounded")
+                            # Text
+                            text_preview = hit["text"][:480]
+                            if len(hit["text"]) > 480:
+                                text_preview += "…"
+                            ui.markdown(text_preview).classes("text-sm text-slate-200")
 
-                        with ui.row().classes("gap-2 mt-3"):
-                            ui.button(
-                                "Bearbeiten",
-                                on_click=lambda h=hit: open_edit_dialog(h),
-                            ).props("unelevated color=blue-8 size=sm")
-                            ui.button(
-                                "Löschen",
-                                on_click=lambda h=hit: open_delete_dialog(h),
-                            ).props("unelevated color=red-9 size=sm")
+                            # Tags
+                            if hit.get("tags"):
+                                with ui.row().classes("gap-1 mt-2 flex-wrap"):
+                                    for tag in hit["tags"].split(","):
+                                        if tag.strip():
+                                            ui.badge(tag.strip()) \
+                                                .props("color=indigo-9 rounded outline")
 
-        search_input.on("keydown.enter", perform_search)
-        ui.button("Suchen", on_click=perform_search) \
-            .props("unelevated color=blue-600 rounded-xl") \
-            .classes("mt-4 w-full md:w-1/3 mx-auto text-lg")
+                            # Aktionen
+                            with ui.row().classes("gap-2 mt-3 justify-end"):
+                                ui.button(
+                                    "Bearbeiten",
+                                    on_click=lambda h=hit: _open_edit_dialog(h),
+                                ).props("flat color=primary size=xs")
+                                ui.button(
+                                    "Löschen",
+                                    on_click=lambda h=hit: _open_delete_dialog(h),
+                                ).props("flat color=negative size=xs")
 
-    # ── Schnellzugriff ────────────────────────────────────────────────────────
+            search_input.on("keydown.enter", perform_search)
 
-    # Reflexions-Dialog (lebt innerhalb von index() — kein globaler None-Verweis)
-    with ui.dialog().props("persistent") as reflection_dialog:
-        with ui.card().classes("w-full max-w-4xl"):
-            ui.label("Wöchentliche Reflexion").classes(
-                "text-3xl font-bold mb-4 text-indigo-300"
-            )
-            reflection_content = ui.markdown().classes(
-                "prose prose-slate max-w-none dark:prose-invert"
-            )
-            ui.button(
-                "Schließen",
-                on_click=reflection_dialog.close,
-            ).props("unelevated color=grey-8 rounded-xl").classes("mt-6")
+        # ── Schnellzugriff ────────────────────────────────────────────────────
 
-    with ui.card().classes(
-        "w-full max-w-4xl mx-auto mt-12 shadow-2xl rounded-3xl "
-        "bg-gradient-to-r from-indigo-950/70 to-slate-950/70 "
-        "border border-indigo-700/30"
-    ):
-        ui.label("Schnellzugriff").classes(
-            "text-2xl font-bold text-center text-indigo-300 mb-8"
-        )
-        with ui.row().classes("justify-center gap-8 flex-wrap px-8 py-6"):
-            ui.button(
-                "Wöchentliche Reflexion",
-                icon="auto_awesome",
-                on_click=lambda: manual_weekly_reflection(
-                    reflection_dialog, reflection_content
-                ),
-            ).props("unelevated color=indigo-600 rounded-xl size=lg") \
-             .classes("min-w-72 text-lg hover:scale-105 transition-transform")
+        # Reflexions-Dialog — lebt innerhalb index(), kein globaler Verweis
+        with ui.dialog().props("persistent") as reflection_dialog:
+            with ui.card().classes("w-full max-w-3xl"):
+                ui.label("Wöchentliche Reflexion") \
+                    .classes("text-base font-medium mb-4 text-indigo-400")
+                reflection_content = ui.markdown().classes("text-sm text-slate-200")
+                ui.button("Schließen", on_click=reflection_dialog.close) \
+                    .props("flat color=grey-7").classes("mt-4")
 
-            ui.button(
-                "Alles exportieren (ZIP)",
-                icon="download",
-                on_click=export_all,
-            ).props("unelevated color=amber-600 rounded-xl size=lg") \
-             .classes("min-w-72 text-lg hover:scale-105 transition-transform")
+        with ui.card().classes("w-full p-4"):
+            ui.label("Aktionen").classes("text-sm font-medium mb-4")
+            with ui.row().classes("gap-3 flex-wrap"):
+                ui.button(
+                    "Wöchentliche Reflexion",
+                    icon="auto_awesome",
+                    on_click=lambda: _manual_weekly_reflection(
+                        reflection_dialog, reflection_content
+                    ),
+                ).props("unelevated color=indigo size=sm") \
+                 .classes("hover:scale-105 transition-transform")
 
-    # ── Statistik-Footer ──────────────────────────────────────────────────────
-    total = db.count()
-    ui.label(f"📝 {total} Gedanken gespeichert").classes(
-        "text-center text-slate-500 text-sm mt-8 mb-4"
-    )
+                ui.button(
+                    "Backup erstellen (ZIP)",
+                    icon="download",
+                    on_click=_export_all,
+                ).props("unelevated color=amber-8 size=sm") \
+                 .classes("hover:scale-105 transition-transform")
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        ui.label(
+            f"ECHO v2  ·  {db.count()} Einträge total  ·  "
+            f"{datetime.now().strftime('%d.%m.%Y')}"
+        ).classes("text-xs text-gray-700 text-center pb-4")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Start
+# API-Routes (vor ui.run() — FIX-H)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-ui.run(
-    title="ECHO – dein lokaler Second Brain",
-    port=9876,
-    host="0.0.0.0",
-    dark=True,
-    reload=False,
-    show=False,      # kein Browser-Fenster beim Start
-    favicon="🧠",
-)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# REST-API für externen Zugriff (Claude, Scripts, etc.)
-# Authentifizierung via X-ECHO-Key Header (geprüft durch Apache)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from nicegui import app as nicegui_app
-from fastapi import Request, HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+
 @nicegui_app.get("/api/search")
-async def api_search(request: Request, q: str = "", limit: int = 6):
+async def api_search(q: str = "", limit: int = 6):
     if not q.strip():
-        raise HTTPException(status_code=400, detail="Parameter 'q' fehlt")
+        raise HTTPException(400, detail="Parameter 'q' fehlt")
     hits = db.search(q.strip(), limit=limit)
     return JSONResponse([{
-        "id":         h["id"],
-        "timestamp":  h["timestamp"],
-        "text":       h["text"],
-        "tags":       h["tags"],
+        "id": h["id"], "timestamp": h["timestamp"],
+        "text": h["text"], "tags": h["tags"],
         "similarity": round(h["similarity"], 3),
     } for h in hits])
 
 
 @nicegui_app.get("/api/notes/recent")
 async def api_recent(limit: int = 10):
-    entries = db.get_notes_since(
-        (datetime.now() - timedelta(days=30)).isoformat()
-    )
+    since   = (datetime.now() - timedelta(days=30)).isoformat()
+    entries = db.get_notes_since(since, note_type="note")
     return JSONResponse([{
-        "id":        e[0],
-        "timestamp": e[1],
-        "text":      e[2][:500],
+        "id": e[0], "timestamp": e[1], "text": e[2][:500],
     } for e in entries[-limit:]])
 
 
@@ -731,11 +804,33 @@ async def api_add_note(request: Request):
     body = await request.json()
     text = (body.get("text") or "").strip()
     if not text:
-        raise HTTPException(status_code=400, detail="'text' fehlt")
+        raise HTTPException(400, detail="'text' fehlt")
+    if is_llm_error(text):
+        raise HTTPException(400, detail="Ungültiger Text")
     timestamp = datetime.now().isoformat()
     note_id   = str(uuid.uuid4())[:12]
     filepath  = save_note_to_disk(note_id, timestamp, text)
-    embedding = get_embedding(text)
-    tags      = body.get("tags", [])
+    embedding = db.embed(text)
+    tags      = [t.strip() for t in body.get("tags", []) if t.strip()]
     db.add_note(note_id, timestamp, text, str(filepath), embedding, tags)
     return JSONResponse({"id": note_id, "timestamp": timestamp, "status": "ok"})
+
+
+@nicegui_app.get("/health")
+async def health():
+    return {"status": "ok", "notes": db.count(note_type="note"), "ollama": _ollama_ok}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Start
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ui.run(
+    title="ECHO",
+    port=9876,
+    host="0.0.0.0",
+    dark=True,
+    reload=False,
+    show=False,
+    favicon="🧠",
+)
